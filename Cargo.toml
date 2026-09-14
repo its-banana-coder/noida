@@ -1,0 +1,22 @@
+[package]
+name = "noida"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Navigation-Oriented IDE for Developer Agents: a terminal IDE with clickable file references from Claude Code / Codex"
+license = "MIT"
+repository = "https://github.com/its-banana-coder/noida"
+readme = "README.md"
+keywords = ["tui", "editor", "ide", "claude", "terminal"]
+categories = ["command-line-utilities", "text-editors"]
+
+[dependencies]
+anyhow = "1.0.104"
+ignore = "0.4.33"
+portable-pty = "0.9.0"
+ratatui = "0.30.2"
+regex = "1.13.1"
+syntect = "5.3.0"
+two-face = "0.5.2"
+unicode-width = "0.2.2"
+vt100 = "0.16.2"

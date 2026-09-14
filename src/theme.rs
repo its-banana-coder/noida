@@ -1,0 +1,18 @@
+use ratatui::style::Color;
+
+pub const BG: Color = Color::Rgb(0x1e, 0x1e, 0x2e);
+pub const FG: Color = Color::Rgb(0xcd, 0xd6, 0xf4);
+pub const DIM: Color = Color::Rgb(0x6c, 0x70, 0x86);
+pub const DIR: Color = Color::Rgb(0x89, 0xb4, 0xfa);
+pub const ACCENT: Color = Color::Rgb(0xf9, 0xe2, 0xaf);
+pub const BORDER: Color = Color::Rgb(0x45, 0x47, 0x5a);
+pub const BORDER_FOCUS: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
+pub const SELECT: Color = Color::Rgb(0x45, 0x47, 0x5a);
+pub const SELECT_DIM: Color = Color::Rgb(0x31, 0x32, 0x44);
+pub const CURRENT_LINE: Color = Color::Rgb(0x2a, 0x2b, 0x3c);
+pub const FLASH: Color = Color::Rgb(0x58, 0x4a, 0x2a);
+pub const LINK: Color = Color::Rgb(0x94, 0xe2, 0xd5);
+pub const HINT_BG: Color = Color::Rgb(0xf9, 0xe2, 0xaf);
+pub const HINT_FG: Color = Color::Rgb(0x11, 0x11, 0x1b);
+pub const STATUS_BG: Color = Color::Rgb(0x18, 0x18, 0x25);
+pub const ERROR: Color = Color::Rgb(0xf3, 0x8b, 0xa8);
