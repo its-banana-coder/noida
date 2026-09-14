@@ -19,9 +19,13 @@ pub enum LspEvent {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Diagnostic {
-    /// 0-based.
+    /// 0-based; columns are UTF-16 units as sent by the server.
     pub line: usize,
     pub col: usize,
+    pub end_line: usize,
+    pub end_col: usize,
+    /// Original JSON, passed back when requesting code actions.
+    pub raw: Value,
     /// 1 = error, 2 = warning, 3 = info, 4 = hint.
     pub severity: u8,
     pub message: String,
@@ -32,16 +36,83 @@ pub struct Diagnostic {
 pub enum Request {
     Definition,
     References,
+    Hover,
+    SignatureHelp,
+    Rename,
+    CodeAction,
+    Formatting,
+    ExecuteCommand,
 }
+
+/// Edits per file: ((line, utf16), (line, utf16), new text).
+pub type TextEdit = ((usize, usize), (usize, usize), String);
+pub type WorkspaceEdit = Vec<(PathBuf, Vec<TextEdit>)>;
 
 /// (path, 0-based line, 0-based UTF-16 column)
 pub type Location = (PathBuf, usize, usize);
 
 pub enum Response {
     Locations(Request, Vec<Location>),
+    Hover(String),
+    /// Signature label and the active parameter's char range within it.
+    Signature(String, Option<(usize, usize)>),
+    Edit(WorkspaceEdit),
+    CodeActions(Vec<Value>),
     Diagnostics,
     Ready(String),
+    Error(String),
     None,
+}
+
+fn parse_text_edits(v: &Value) -> Vec<TextEdit> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| {
+                    let r = &e["range"];
+                    Some((
+                        (r["start"]["line"].as_u64()? as usize, r["start"]["character"].as_u64()? as usize),
+                        (r["end"]["line"].as_u64()? as usize, r["end"]["character"].as_u64()? as usize),
+                        e["newText"].as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn parse_workspace_edit(v: &Value) -> WorkspaceEdit {
+    let mut out: WorkspaceEdit = Vec::new();
+    if let Some(changes) = v["changes"].as_object() {
+        for (u, edits) in changes {
+            if let Some(p) = path_from_uri(u) {
+                out.push((p, parse_text_edits(edits)));
+            }
+        }
+    }
+    if let Some(dc) = v["documentChanges"].as_array() {
+        for change in dc {
+            if let Some(p) = change["textDocument"]["uri"].as_str().and_then(path_from_uri) {
+                out.push((p, parse_text_edits(&change["edits"])));
+            }
+        }
+    }
+    out
+}
+
+fn hover_text(v: &Value) -> String {
+    let part = |x: &Value| -> String {
+        match x {
+            Value::String(s) => s.clone(),
+            Value::Object(_) => x["value"].as_str().unwrap_or("").to_string(),
+            _ => String::new(),
+        }
+    };
+    let raw = match &v["contents"] {
+        Value::Array(a) => a.iter().map(part).collect::<Vec<_>>().join("\n\n"),
+        other => part(other),
+    };
+    raw.lines().filter(|l| !l.trim_start().starts_with("```")).collect::<Vec<_>>().join("\n").trim().to_string()
 }
 
 fn server_for(lang: Lang) -> Option<(&'static str, &'static [&'static str])> {
@@ -239,9 +310,18 @@ impl Lsp {
                         "synchronization": {"didSave": true},
                         "publishDiagnostics": {"relatedInformation": false},
                         "definition": {"linkSupport": true},
-                        "references": {}
+                        "references": {},
+                        "hover": {"contentFormat": ["markdown", "plaintext"]},
+                        "signatureHelp": {"signatureInformation": {"parameterInformation": {"labelOffsetSupport": true}, "activeParameterSupport": true}},
+                        "rename": {"prepareSupport": false},
+                        "formatting": {},
+                        "rangeFormatting": {},
+                        "codeAction": {
+                            "codeActionLiteralSupport": {"codeActionKind": {"valueSet": ["", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports"]}},
+                            "isPreferredSupport": true
+                        }
                     },
-                    "workspace": {"workspaceFolders": true, "configuration": true},
+                    "workspace": {"workspaceFolders": true, "configuration": true, "applyEdit": true, "workspaceEdit": {"documentChanges": true}},
                     "window": {"workDoneProgress": false}
                 }
             }
@@ -288,20 +368,40 @@ impl Lsp {
 
     /// Returns false when no ready server handles this file.
     pub fn request(&mut self, kind: Request, path: &Path, line: usize, utf16_col: usize) -> bool {
+        let params = match kind {
+            Request::References => json!({"context": {"includeDeclaration": true}}),
+            _ => json!({}),
+        };
+        let mut params = params;
+        params["position"] = json!({"line": line, "character": utf16_col});
+        self.request_with(kind, path, params)
+    }
+
+    /// Send a request for `path`; `params` gets `textDocument` filled in.
+    pub fn request_with(&mut self, kind: Request, path: &Path, mut params: Value) -> bool {
         let Some(idx) = Lang::for_path(path).and_then(|l| self.by_lang.get(&l).copied().flatten()) else { return false };
         let s = &mut self.servers[idx];
-        if !s.ready || !s.open.contains_key(path) {
+        if !s.ready || (!s.open.contains_key(path) && kind != Request::ExecuteCommand) {
             return false;
         }
         let id = s.next_id;
         s.next_id += 1;
         s.pending.insert(id, kind);
-        let (method, mut params) = match kind {
-            Request::Definition => ("textDocument/definition", json!({})),
-            Request::References => ("textDocument/references", json!({"context": {"includeDeclaration": true}})),
+        let method = match kind {
+            Request::Definition => "textDocument/definition",
+            Request::References => "textDocument/references",
+            Request::Hover => "textDocument/hover",
+            Request::SignatureHelp => "textDocument/signatureHelp",
+            Request::Rename => "textDocument/rename",
+            Request::CodeAction => "textDocument/codeAction",
+            Request::Formatting => {
+                if params.get("range").is_some() { "textDocument/rangeFormatting" } else { "textDocument/formatting" }
+            }
+            Request::ExecuteCommand => "workspace/executeCommand",
         };
-        params["textDocument"] = json!({"uri": uri(path)});
-        params["position"] = json!({"line": line, "character": utf16_col});
+        if kind != Request::ExecuteCommand {
+            params["textDocument"] = json!({"uri": uri(path)});
+        }
         s.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
         true
     }
@@ -322,6 +422,10 @@ impl Lsp {
 
         // Server → client requests need an answer or some servers stall.
         if let (Some(id), Some(method)) = (msg.get("id"), msg["method"].as_str()) {
+            if method == "workspace/applyEdit" {
+                s.send(&json!({"jsonrpc": "2.0", "id": id, "result": {"applied": true}}));
+                return Response::Edit(parse_workspace_edit(&msg["params"]["edit"]));
+            }
             let result = match method {
                 "workspace/configuration" => {
                     let n = msg["params"]["items"].as_array().map_or(0, Vec::len);
@@ -343,6 +447,9 @@ impl Lsp {
                         .map(|d| Diagnostic {
                             line: d["range"]["start"]["line"].as_u64().unwrap_or(0) as usize,
                             col: d["range"]["start"]["character"].as_u64().unwrap_or(0) as usize,
+                            end_line: d["range"]["end"]["line"].as_u64().unwrap_or(0) as usize,
+                            end_col: d["range"]["end"]["character"].as_u64().unwrap_or(0) as usize,
+                            raw: d.clone(),
                             severity: d["severity"].as_u64().unwrap_or(1) as u8,
                             message: d["message"].as_str().unwrap_or("").lines().next().unwrap_or("").to_string(),
                             source: d["source"].as_str().unwrap_or("").to_string(),
@@ -368,7 +475,35 @@ impl Lsp {
             return Response::Ready(s.name.clone());
         }
         let Some(kind) = s.pending.remove(&id) else { return Response::None };
+        if let Some(err) = msg.get("error") {
+            let text = err["message"].as_str().unwrap_or("request failed").lines().next().unwrap_or("").to_string();
+            return Response::Error(format!("{}: {text}", s.name));
+        }
         let result = &msg["result"];
+        match kind {
+            Request::Hover => return if result.is_null() { Response::Hover(String::new()) } else { Response::Hover(hover_text(result)) },
+            Request::SignatureHelp => {
+                let active_sig = result["activeSignature"].as_u64().unwrap_or(0) as usize;
+                let Some(sig) = result["signatures"].get(active_sig) else { return Response::Signature(String::new(), None) };
+                let label = sig["label"].as_str().unwrap_or("").to_string();
+                let active_param = sig["activeParameter"].as_u64().or(result["activeParameter"].as_u64()).unwrap_or(0) as usize;
+                let range = sig["parameters"].get(active_param).and_then(|p| match &p["label"] {
+                    Value::String(name) => label.find(name.as_str()).map(|b| {
+                        let s = label[..b].chars().count();
+                        (s, s + name.chars().count())
+                    }),
+                    Value::Array(a) => Some((a.first()?.as_u64()? as usize, a.get(1)?.as_u64()? as usize)),
+                    _ => None,
+                });
+                return Response::Signature(label, range);
+            }
+            Request::Rename => return Response::Edit(parse_workspace_edit(result)),
+            // Formatting edits apply to the requesting document (empty path).
+            Request::Formatting => return Response::Edit(vec![(PathBuf::new(), parse_text_edits(result))]),
+            Request::CodeAction => return Response::CodeActions(result.as_array().cloned().unwrap_or_default()),
+            Request::ExecuteCommand => return Response::None,
+            Request::Definition | Request::References => {}
+        }
         let items: Vec<&Value> = match result {
             Value::Array(a) => a.iter().collect(),
             Value::Object(_) => vec![result],
@@ -428,3 +563,4 @@ mod tests {
         panic!("no diagnostics");
     }
 }
+

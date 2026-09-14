@@ -4,6 +4,7 @@
 use crate::git;
 use crate::hooks::AgentEvent;
 use crate::lsp::LspEvent;
+use crate::app::SearchResults;
 use crate::refs::FileIndex;
 use crate::sessions::PastSession;
 use crate::symbols::ProjectSymbols;
@@ -17,4 +18,5 @@ pub enum Bg {
     Sessions(Vec<PastSession>),
     Symbols(ProjectSymbols),
     Lsp(LspEvent),
+    Search(SearchResults),
 }

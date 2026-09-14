@@ -61,9 +61,23 @@ impl App {
         let buf = f.buffer_mut();
 
         if show_tree {
-            pane(buf, tree_block, Line::from(" FILES "), self.focus == Focus::Tree);
-            let open = self.doc().map(|d| d.path.clone());
-            self.tree.render(self.rects.tree, buf, self.focus == Focus::Tree, open.as_deref(), &self.activity.touched);
+            let on = Style::default().fg(theme::HINT_FG()).bg(theme::BORDER_FOCUS()).add_modifier(Modifier::BOLD);
+            let off = Style::default().fg(theme::DIM());
+            let outline = self.tree_mode == super::TreeMode::Outline;
+            let title = Line::from(vec![
+                Span::raw(" "),
+                Span::styled(" FILES ", if outline { off } else { on }),
+                Span::raw(" "),
+                Span::styled(" OUTLINE ", if outline { on } else { off }),
+                Span::raw(" "),
+            ]);
+            pane(buf, tree_block, title, self.focus == Focus::Tree);
+            if outline {
+                self.render_outline(self.rects.tree, buf, self.focus == Focus::Tree);
+            } else {
+                let open = self.doc().map(|d| d.path.clone());
+                self.tree.render(self.rects.tree, buf, self.focus == Focus::Tree, open.as_deref(), &self.activity.touched);
+            }
         }
 
         if show_editor {
@@ -76,6 +90,7 @@ impl App {
             let _ = total_refs;
         }
 
+        self.render_popup(buf, self.rects.editor, self.last_cursor);
         self.draw_status(buf, status);
 
         if let Mode::Picker(p) = &self.mode {
@@ -96,17 +111,44 @@ impl App {
             let title = match view {
                 View::Review(v) => format!(" ± {} ", v.title),
                 View::Activity(v) => format!(" ⏱ {} ", v.title),
+                View::Search(_) => " ⌕ Search ".to_string(),
             };
             x += title.chars().count() as u16 + 1;
             spans.push(Span::styled(title, active_style));
             spans.push(Span::raw(" "));
         }
-        for (i, d) in self.docs.iter().enumerate() {
-            let label = format!(" {}{} ", d.file_name(), if d.dirty { " ●" } else { "" });
+        // Scroll the tab strip so the active tab stays visible.
+        let labels: Vec<String> = self
+            .docs
+            .iter()
+            .map(|d| format!(" {}{}{} ", if d.pinned { "▪ " } else { "" }, d.file_name(), if d.dirty { " ●" } else { "" }))
+            .collect();
+        let avail = block.width.saturating_sub(x - block.x + 2);
+        let mut first = 0;
+        let width_of = |from: usize, to: usize| labels[from..=to].iter().map(|l| l.chars().count() as u16 + 1).sum::<u16>();
+        if !labels.is_empty() {
+            let active = self.active_doc.min(labels.len() - 1);
+            while first < active && width_of(first, active) + 2 > avail {
+                first += 1;
+            }
+        }
+        if first > 0 {
+            spans.push(Span::styled("‹ ", Style::default().fg(theme::DIM())));
+            x += 2;
+        }
+        for (i, d) in self.docs.iter().enumerate().skip(first) {
+            let label = labels[i].clone();
             let w = label.chars().count() as u16;
+            if x + w > block.x + block.width.saturating_sub(2) {
+                spans.push(Span::styled("›", Style::default().fg(theme::DIM())));
+                break;
+            }
             self.rects.doc_tabs.push((x, x + w, i));
             x += w + 1;
-            let style = if i == self.active_doc && self.view.is_none() { active_style } else { Style::default().fg(theme::DIM()) };
+            let mut style = if i == self.active_doc && self.view.is_none() { active_style } else { Style::default().fg(theme::DIM()) };
+            if d.preview {
+                style = style.add_modifier(Modifier::ITALIC);
+            }
             spans.push(Span::styled(label, style));
             spans.push(Span::raw(" "));
         }
@@ -125,6 +167,10 @@ impl App {
                 v.render(area, buf);
                 return None;
             }
+            Some(View::Search(v)) => {
+                let c = v.render(area, buf);
+                return if self.focus == Focus::Editor { c } else { None };
+            }
             None => {}
         }
         let root = self.root.clone();
@@ -139,6 +185,7 @@ impl App {
                 }
                 let diags = self.lsp.diagnostics.get(&doc.path).map(Vec::as_slice).unwrap_or(&[]);
                 let c = doc.render(text_area, buf, focused, &self.syntax, diags, sticky);
+                self.last_cursor = c;
                 let doc_ref: &crate::editor::Doc = doc;
                 if let Mode::Find(bar) = &self.mode {
                     return bar.render(text_area, buf, Some(doc_ref));
@@ -231,6 +278,10 @@ impl App {
             Mode::Prompt { kind, input } => {
                 let label = match kind {
                     PromptKind::GotoLine => "go to line[:col]",
+                    PromptKind::NewFile => "new file path",
+                    PromptKind::NewFolder => "new folder path",
+                    PromptKind::Rename => "rename / move to",
+                    PromptKind::RenameSymbol => "rename symbol to",
                     PromptKind::NewBranch => "new branch name",
                     PromptKind::Commit => "commit message",
                     PromptKind::WorktreeName(_) => "worktree task name",
@@ -244,6 +295,7 @@ impl App {
                     match (self.focus, &self.view) {
                         (Focus::Editor, Some(View::Review(v))) => v.status(),
                         (Focus::Editor, Some(View::Activity(v))) => v.status().into(),
+                        (Focus::Editor, Some(View::Search(v))) => v.status(),
                         (Focus::Tree, _) => "↑↓ move  ⏎ open  ← collapse  R refresh  │  Alt+x commands  Alt+o files  Alt+g sessions  Alt+q quit".into(),
                         (Focus::Editor, None) => "^S save  ^F find  F12 definition  Alt+l symbols  │  Alt+s send  Alt+e ask  Alt+r review  Alt+x commands".into(),
                         (Focus::Agent, _) => "Alt+j jump to ref  Alt+g sessions  Alt+n next  Alt+v split  │  Alt+r review  Alt+a activity  Alt+x commands".into(),
@@ -330,7 +382,7 @@ fn draw_breadcrumbs(buf: &mut Buffer, area: Rect, root: &std::path::Path, doc: &
     }
 }
 
-fn symbol_icon(kind: &str) -> &'static str {
+pub(super) fn symbol_icon(kind: &str) -> &'static str {
     match kind {
         "class" | "struct" => "◇",
         "interface" | "trait" => "◈",

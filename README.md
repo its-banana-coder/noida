@@ -40,12 +40,22 @@ NOIDA doesn't reimplement Claude Code or Codex. It runs the real CLIs in a pseud
 
 **Code intelligence**
 - **Tree-sitter** symbols for Rust, TypeScript/TSX, JavaScript, Python, Go and Java: file outline (`Alt+l`), project symbols (`Alt+k`), structural selection (`Alt+Shift+→` / `←`)
-- **Language servers** when installed (rust-analyzer, typescript-language-server, pyright/pylsp, gopls): diagnostics in the gutter and a problems list (`Alt+i`), go to definition (`F12`, `Ctrl+click`), find references (`Shift+F12`). Without a server, definitions come from the tree-sitter index and references from a project-wide search.
+- **Language servers** when installed (rust-analyzer, typescript-language-server, pyright/pylsp, gopls): diagnostics with underlines and a problems list (`Alt+i`), hover (`Alt+h`), signature help, go to definition (`F12`, `Ctrl+click`), find references (`Shift+F12`), rename across files (`F2`), quick fixes and code actions (`Alt+.`), format document (`Alt+F`), format selection, organize imports. Without a server, definitions come from the tree-sitter index and references from a project-wide search.
 
 **Editor**
-- Syntax highlighting (the same language set as `bat`), tabs, undo/redo, find, go to line, mouse selection, back/forward (`Alt+←` / `Alt+→`)
+- **Multiple cursors**: `Ctrl+D` next occurrence, `Alt+click`, `Ctrl+Alt+↑/↓`, `Alt+drag` column selection, select all occurrences
+- **Find / replace** (`Ctrl+F` / `Ctrl+H`): match case, whole word, regex with `$1` captures, in selection, match count, replace one/all
+- **Workspace search / replace** (`Alt+/`): include globs, results grouped by file, a live preview of each replacement, and matches can be excluded before replacing
+- Auto-closing brackets, quotes and JSX/HTML tags, bracket matching and pair colors, toggle comment (`Ctrl+/`), move line (`Alt+↑/↓`), copy line (`Alt+Shift+↑/↓`), delete line (`Ctrl+K`)
+- Folding (click `▾` in the gutter), word wrap, sticky scroll, breadcrumbs
+- Tabs: preview tabs (single click in the tree), pin, close others/all/to the right, reopen closed (`Alt+T`), recent files (`Alt+E`)
 - Open files reload automatically when an agent edits them
 - **Command palette** (`Alt+x`) and fuzzy file open (`Alt+o` / `Ctrl+P`)
+- NOIDA Dark and Light themes, settings in `~/.config/noida/settings.json` (palette: *Preferences: Open Settings*)
+
+**File tree**
+- New file/folder, rename/move, delete, copy relative/absolute path, reveal in the OS file manager
+- **Outline** panel (`Tab` in the tree) that follows the cursor
 
 ## Installation
 
@@ -129,13 +139,15 @@ NOIDA's global shortcuts use **Alt**, so ordinary keys still reach the agent. Th
 | `Alt+g` | Sessions: switch tab, new tab, resume a past conversation |
 | `Alt+n` / `Alt+v` / `Alt+w` | Next agent tab / split agent panes / other pane |
 | `Alt+s` / `Alt+S` | Send selection / current file to the agent |
-| `Alt+e` / `Alt+F` | Ask agent to explain selection / fix problem at cursor |
+| `Alt+e` | Ask agent… (explain, refactor, find bugs, write tests, fix problem, send symbol) |
+| `Alt+/` | Search and replace in workspace |
+| `Alt+E` / `Alt+T` | Recent files / reopen closed tab |
 | `Alt+r` | Review changes (`a` accept hunk, `x` reject, `A`/`X` whole file, `Enter` open) |
 | `Alt+a` | Agent activity and timeline |
 | `Alt+l` / `Alt+k` | Symbols in file / project |
 | `Alt+i` | Problems |
 | `Alt+-` | Go back |
-| `Alt+z` / `Alt+,` / `Alt+.` | Zoom pane / grow / shrink agent pane (or drag dividers) |
+| `Alt+z` / `Alt+<` / `Alt+>` | Zoom pane / grow / shrink agent pane (or drag dividers) |
 | `Alt+q` | Quit (asks again if files are unsaved) |
 
 **Editor**
@@ -143,7 +155,11 @@ NOIDA's global shortcuts use **Alt**, so ordinary keys still reach the agent. Th
 | Key | Action |
 |---|---|
 | `Ctrl+S` | Save |
-| `Ctrl+F`, `F3` | Find, find next |
+| `Ctrl+F` / `Ctrl+H`, `F3` / `Shift+F3` | Find / replace, next / previous (in the widget: `Alt+c` case, `Alt+w` word, `Alt+r` regex, `Alt+l` in selection, `Alt+a` replace all) |
+| `Ctrl+D`, `Alt+click`, `Ctrl+Alt+↑/↓` | Add cursor (next occurrence / at click / above, below); `Esc` back to one |
+| `Ctrl+/` | Toggle comment |
+| `Alt+↑/↓`, `Alt+Shift+↑/↓`, `Ctrl+K`, `Ctrl+L` | Move line, copy line, delete line, select line |
+| `Alt+h`, `F2`, `Alt+.`, `Alt+F` | Hover, rename symbol, code actions, format document |
 | `Ctrl+G` | Go to `line[:col]` |
 | `F12`, `Ctrl+click` / `Shift+F12` | Go to definition / find references |
 | `Alt+Shift+→` / `Alt+Shift+←` | Expand / shrink selection by syntax |
@@ -156,7 +172,7 @@ NOIDA's global shortcuts use **Alt**, so ordinary keys still reach the agent. Th
 | `Ctrl+W`, middle-click tab | Close file |
 | `Ctrl+PgUp` / `Ctrl+PgDn` | Previous / next open file |
 
-**File tree**: `↑/↓` or `j/k` move, `Enter` opens, `←/→` collapse/expand, `R` refreshes.
+**File tree**: `↑/↓` or `j/k` move, `Enter` opens, `Space` previews, `←/→` collapse/expand, `a` new file, `A` new folder, `r`/`F2` rename, `d` delete, `y`/`Y` copy path, `o` reveal in file manager, `Tab` outline, `R` refresh.
 
 **Agent pane**: every key goes to the agent. Mouse wheel scrolls back through output.
 
@@ -192,7 +208,9 @@ Code layout:
 | `src/workspace.rs`, `src/events.rs` | Session restore, background event bus |
 | `src/agent.rs` | PTY processes, vt100 emulation, key encoding, terminal query replies |
 | `src/refs.rs` | File reference detection in agent output |
-| `src/editor.rs` | Text buffer, editing, syntax highlighting |
+| `src/editor/` | Multi-cursor buffer, search, folding (`mod.rs`), layout and rendering (`view.rs`), language conventions (`lang.rs`) |
+| `src/app/search.rs`, `findbar.rs`, `files.rs`, `lsp_ui.rs` | Workspace search, find widget, tabs/tree ops/outline, LSP editor features |
+| `src/settings.rs`, `src/theme.rs` | Settings file, dark/light palettes |
 | `src/tree.rs` | File tree |
 
 ## License

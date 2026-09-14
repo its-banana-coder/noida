@@ -19,6 +19,7 @@ pub enum Target {
     Branch(String),
     History(usize),
     AgentTab(usize),
+    CodeAction(usize),
     Resume(crate::actions::AgentKind, String),
 }
 

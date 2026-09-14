@@ -100,7 +100,6 @@ pub struct SearchOpts {
 }
 
 pub struct Search {
-    pub query: String,
     pub opts: SearchOpts,
     pub matches: Vec<(Pos, Pos)>,
     pub current: Option<usize>,
@@ -111,6 +110,9 @@ pub struct Search {
 
 pub struct Doc {
     pub path: PathBuf,
+    /// Preview tabs are replaced by the next preview until edited or pinned.
+    pub preview: bool,
+    pub pinned: bool,
     lines: Vec<String>,
     cursors: Vec<Cursor>,
     top: (usize, usize),
@@ -161,6 +163,8 @@ impl Doc {
     pub fn from_text(path: &Path, text: &str, syntax: &Syntax) -> Self {
         let mut doc = Self {
             path: path.to_path_buf(),
+            preview: false,
+            pinned: false,
             lines: Vec::new(),
             cursors: vec![Cursor::at((0, 0))],
             top: (0, 0),
@@ -430,6 +434,10 @@ impl Doc {
         let ((sl, _), (el, ec)) = self.primary().range();
         let el = if ec == 0 && el > sl { el - 1 } else { el };
         (sl + 1, el + 1)
+    }
+
+    pub fn uses_tabs(&self) -> bool {
+        self.indent_unit == "\t"
     }
 
     pub fn has_selection(&self) -> bool {
@@ -1155,7 +1163,7 @@ impl Doc {
         } else {
             None
         };
-        let mut search = Search { query: query.to_string(), opts, matches: Vec::new(), current: None, error: None, scope, re: None };
+        let mut search = Search { opts, matches: Vec::new(), current: None, error: None, scope, re: None };
         if !query.is_empty() {
             let mut pat = if opts.regex { query.to_string() } else { regex::escape(query) };
             if opts.word {

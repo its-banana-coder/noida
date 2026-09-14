@@ -17,6 +17,7 @@ pub enum ViewResult {
     None,
     Close,
     Open(PathBuf, usize),
+    OpenAt(PathBuf, usize, usize),
     Message(String, bool),
     /// Files on disk changed (reload docs, refresh git).
     Changed(String),

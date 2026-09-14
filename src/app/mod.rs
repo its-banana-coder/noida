@@ -1,8 +1,13 @@
 //! Top-level application state, input routing and command dispatch.
 
 mod draw;
+mod files;
 mod findbar;
+mod lsp_ui;
+mod search;
 mod views;
+
+pub use search::SearchResults;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -13,7 +18,7 @@ use std::time::{Duration, Instant};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 
-use crate::actions::{Action, AgentKind, Ask};
+use crate::actions::{Action, AgentKind};
 use crate::activity::{Activity, Notice, Turn};
 use crate::agent::{Agent, HINT_KEYS, hint_label};
 use crate::editor::{Click, Doc, KeyResult, SearchOpts, Syntax};
@@ -30,6 +35,9 @@ use crate::tree::{Activate, Tree};
 use crate::workspace::{self, AgentState, DocState, Workspace};
 
 use findbar::{FindBar, FindResult};
+use files::TreeMode;
+use lsp_ui::{Popup, PopupKind};
+use search::SearchView;
 use views::{ActivityView, ReviewView, ViewResult};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -50,6 +58,10 @@ enum Mode {
 #[derive(Clone, Copy, PartialEq)]
 enum PromptKind {
     GotoLine,
+    NewFile,
+    NewFolder,
+    Rename,
+    RenameSymbol,
     NewBranch,
     Commit,
     WorktreeName(AgentKind),
@@ -58,6 +70,7 @@ enum PromptKind {
 enum View {
     Review(ReviewView),
     Activity(ActivityView),
+    Search(SearchView),
 }
 
 #[derive(PartialEq)]
@@ -130,6 +143,19 @@ pub struct App {
     forward: Vec<Loc>,
     last_search: Option<(String, SearchOpts)>,
     settings: Settings,
+    parked_search: Option<View>,
+    closed: Vec<Loc>,
+    mru: Vec<PathBuf>,
+    rename_from: Option<PathBuf>,
+    tree_mode: TreeMode,
+    outline_selected: usize,
+    outline_scroll: usize,
+    last_tree_click: Option<(usize, Instant)>,
+    popup: Option<Popup>,
+    code_action_list: Vec<serde_json::Value>,
+    organize_pending: bool,
+    pending_format: Option<PathBuf>,
+    last_cursor: Option<(u16, u16)>,
     tx: Sender<Bg>,
     file_index: Arc<FileIndex>,
     index_built: Option<Instant>,
@@ -196,6 +222,19 @@ impl App {
             forward: Vec::new(),
             last_search: None,
             settings: Settings::default(),
+            parked_search: None,
+            closed: Vec::new(),
+            mru: Vec::new(),
+            rename_from: None,
+            tree_mode: TreeMode::Files,
+            outline_selected: 0,
+            outline_scroll: 0,
+            last_tree_click: None,
+            popup: None,
+            code_action_list: Vec::new(),
+            organize_pending: false,
+            pending_format: None,
+            last_cursor: None,
             file_index: Arc::default(),
             index_built: None,
             index_building: false,
@@ -539,9 +578,23 @@ impl App {
                     }
                 }
             }
+            Bg::Search(r) => {
+                if let Some(View::Search(v)) = &mut self.view {
+                    v.on_results(r);
+                }
+            }
             Bg::Lsp(ev) => match self.lsp.handle(ev) {
                 Response::Ready(name) => self.info(format!("{name} ready")),
                 Response::Locations(kind, locs) => self.on_locations(kind, locs),
+                Response::Hover(text) => self.on_hover(text),
+                Response::Signature(label, hl) => self.on_signature(label, hl),
+                Response::Edit(edit) => self.apply_workspace_edit(edit),
+                Response::CodeActions(actions) => self.on_code_actions(actions),
+                Response::Error(e) => {
+                    self.pending_format = None;
+                    self.organize_pending = false;
+                    self.error(e);
+                }
                 Response::Diagnostics | Response::None => {}
             },
         }
@@ -676,6 +729,11 @@ impl App {
             self.banner = None;
             changed = true;
         }
+        if let Some(View::Search(v)) = &mut self.view {
+            changed |= v.tick();
+        }
+        self.auto_save();
+        self.touch_mru();
         let touched_recent = self.activity.touched.values().any(|(_, t)| t.elapsed() < Duration::from_secs(9));
         changed || touched_recent || self.doc().is_some_and(Doc::flash_active)
     }
@@ -718,6 +776,11 @@ impl App {
                         d.insert_text(text);
                     }
                 }
+                Focus::Editor => {
+                    if let Some(View::Search(v)) = &mut self.view {
+                        v.paste(text);
+                    }
+                }
                 _ => {}
             },
         }
@@ -732,8 +795,8 @@ impl App {
         if alt && !ctrl {
             if let KeyCode::Char(c) = key.code {
                 match c {
-                    ',' => return self.agent_pct = (self.agent_pct + 5).min(85),
-                    '.' => return self.agent_pct = self.agent_pct.saturating_sub(5).max(15),
+                    '<' | ',' => return self.agent_pct = (self.agent_pct + 5).min(85),
+                    '>' => return self.agent_pct = self.agent_pct.saturating_sub(5).max(15),
                     _ => {}
                 }
                 if let Some(action) = global_action(c) {
@@ -778,6 +841,7 @@ impl App {
         let result = match &mut self.view {
             Some(View::Review(v)) => v.handle_key(key),
             Some(View::Activity(v)) => v.handle_key(key),
+            Some(View::Search(v)) => v.handle_key(key),
             None => return,
         };
         self.on_view_result(result);
@@ -788,8 +852,15 @@ impl App {
             ViewResult::None => {}
             ViewResult::Close => self.view = None,
             ViewResult::Open(path, line) => {
-                self.view = None;
+                if !matches!(self.view, Some(View::Search(_))) {
+                    self.view = None;
+                }
                 self.open_location(&path, Some(line), None, None);
+                self.focus_doc_from_view();
+            }
+            ViewResult::OpenAt(path, line, col) => {
+                self.open_location(&path, Some(line), Some(col), None);
+                self.focus_doc_from_view();
             }
             ViewResult::Message(m, err) => {
                 if err {
@@ -816,8 +887,18 @@ impl App {
     }
 
     fn tree_key(&mut self, key: KeyEvent) {
+        if self.tree_mode == TreeMode::Outline {
+            return self.outline_key(key.code);
+        }
         let page = self.rects.tree.height.max(2) as isize - 1;
         match key.code {
+            KeyCode::Char('a') => self.prompt_new(false),
+            KeyCode::Char('A') => self.prompt_new(true),
+            KeyCode::Char('r') | KeyCode::F(2) => self.prompt_rename(),
+            KeyCode::Char('d') | KeyCode::Delete => self.delete_entry(),
+            KeyCode::Char('y') => self.copy_path(false),
+            KeyCode::Char('Y') => self.copy_path(true),
+            KeyCode::Char('o') => self.reveal_in_os(),
             KeyCode::Up | KeyCode::Char('k') => self.tree.move_by(-1),
             KeyCode::Down | KeyCode::Char('j') => self.tree.move_by(1),
             KeyCode::PageUp => self.tree.move_by(-page),
@@ -837,10 +918,17 @@ impl App {
             KeyCode::Enter => {
                 if let Activate::Open(p) = self.tree.activate() {
                     self.open_path(&p, None);
+                    self.pin_active_preview();
                     self.focus = Focus::Editor;
                 }
             }
-            KeyCode::Tab => self.focus = Focus::Editor,
+            KeyCode::Char(' ') => {
+                if let Activate::Open(p) = self.tree.activate() {
+                    self.open_preview(&p);
+                }
+            }
+            KeyCode::Tab => self.tree_mode = TreeMode::Outline,
+            KeyCode::Esc => self.focus = Focus::Editor,
             _ => {}
         }
     }
@@ -861,6 +949,9 @@ impl App {
                 }
                 return;
             }
+            KeyCode::F(2) => return self.run(Action::RenameSymbol),
+            KeyCode::Char('h') if alt => return self.run(Action::Hover),
+            KeyCode::Char('.') if alt => return self.run(Action::CodeActions),
             KeyCode::F(12) if shift => return self.run(Action::FindReferences),
             KeyCode::F(12) => return self.run(Action::GoToDefinition),
             KeyCode::Char('w') if ctrl => return self.run(Action::CloseFile),
@@ -893,7 +984,17 @@ impl App {
             }
             return;
         };
-        match doc.handle_key(key) {
+        let result = doc.handle_key(key);
+        if doc.dirty {
+            doc.preview = false;
+        }
+        match key.code {
+            KeyCode::Char('(' | ',') if !ctrl && !alt => self.signature_help(),
+            KeyCode::Char(')') | KeyCode::Esc | KeyCode::Enter => self.popup = None,
+            _ if self.popup.as_ref().is_some_and(|p| p.kind == PopupKind::Hover) => self.popup = None,
+            _ => {}
+        }
+        match result {
             KeyResult::Copy(text) => {
                 self.copy_to_host(&text);
                 self.info("copied to clipboard");
@@ -959,7 +1060,10 @@ impl App {
                     input.pop();
                     self.mode = Mode::Prompt { kind, input };
                 }
-                KeyCode::Char(c) => {
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.mode = Mode::Prompt { kind, input: String::new() };
+                }
+                KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                     input.push(c);
                     self.mode = Mode::Prompt { kind, input };
                 }
@@ -976,6 +1080,10 @@ impl App {
                     doc.goto(line, parts.next().flatten(), None);
                 }
             }
+            PromptKind::NewFile => self.create_entry(&input, false),
+            PromptKind::NewFolder => self.create_entry(&input, true),
+            PromptKind::Rename => self.rename_entry(&input),
+            PromptKind::RenameSymbol => self.rename_symbol(&input),
             PromptKind::NewBranch => self.git_op(|r| r.create_branch(input.trim()).map(|_| format!("switched to new branch {}", input.trim()))),
             PromptKind::Commit => {
                 if input.trim().is_empty() {
@@ -995,6 +1103,15 @@ impl App {
         }
         self.refresh_git();
         self.last_disk_check = Instant::now() - Duration::from_secs(1);
+    }
+
+    /// Opening a result from the search view keeps the view around (Alt+/ returns to it).
+    fn focus_doc_from_view(&mut self) {
+        if let Some(View::Search(_)) = &self.view {
+            let view = self.view.take();
+            self.parked_search = view;
+        }
+        self.focus = Focus::Editor;
     }
 
     fn open_find(&mut self, replace: bool) {
@@ -1074,6 +1191,9 @@ impl App {
 
     fn on_mouse(&mut self, m: MouseEvent) {
         let (x, y) = (m.column, m.row);
+        if matches!(m.kind, MouseEventKind::Down(_)) {
+            self.popup = None;
+        }
         let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
         let r = &self.rects;
         let (tree, editor, tree_block, main) = (r.tree, r.editor, r.tree_block, r.main);
@@ -1113,12 +1233,22 @@ impl App {
                         self.refresh_marks();
                     }
                     self.focus = Focus::Editor;
+                } else if y == tree_block.y && inside(tree_block) {
+                    self.tree_mode = if x < tree_block.x + 9 { TreeMode::Files } else { TreeMode::Outline };
+                    self.focus = Focus::Tree;
                 } else if inside(tree) {
                     self.focus = Focus::Tree;
-                    if let Some(i) = self.tree.row_at(tree, y) {
+                    if self.tree_mode == TreeMode::Outline {
+                        self.outline_click(tree, y);
+                    } else if let Some(i) = self.tree.row_at(tree, y) {
+                        let double = self.tree_double_click(i);
                         self.tree.selected = i;
                         if let Activate::Open(p) = self.tree.activate() {
-                            self.open_path(&p, None);
+                            self.open_preview(&p);
+                            if double {
+                                self.pin_active_preview();
+                                self.focus = Focus::Editor;
+                            }
                         }
                     }
                 } else if inside(editor) {
@@ -1126,6 +1256,10 @@ impl App {
                     match &mut self.view {
                         Some(View::Review(v)) => v.click(y),
                         Some(View::Activity(v)) => {
+                            let r = v.click(y);
+                            self.on_view_result(r);
+                        }
+                        Some(View::Search(v)) => {
                             let r = v.click(y);
                             self.on_view_result(r);
                         }
@@ -1204,6 +1338,7 @@ impl App {
                     match &mut self.view {
                         Some(View::Review(v)) => v.scroll_by(delta),
                         Some(View::Activity(v)) => v.scroll_by(delta),
+                        Some(View::Search(v)) => v.scroll_by(delta),
                         None => {
                             if let Some(doc) = self.docs.get_mut(self.active_doc) {
                                 doc.scroll(delta);
@@ -1258,6 +1393,17 @@ impl App {
             Action::GoToLine => self.mode = Mode::Prompt { kind: PromptKind::GotoLine, input: String::new() },
             Action::Find => self.open_find(false),
             Action::FindReplace => self.open_find(true),
+            Action::SearchWorkspace if self.parked_search.is_some() && self.view.is_none() && !self.doc().is_some_and(Doc::has_selection) => {
+                self.view = self.parked_search.take();
+                self.focus = Focus::Editor;
+            }
+            Action::SearchWorkspace | Action::ReplaceWorkspace => {
+                self.parked_search = None;
+                let query = self.doc().and_then(|d| d.selected_text().filter(|t| !t.contains('\n')).or_else(|| d.word_at_cursor().filter(|_| !d.has_selection()))).unwrap_or_default();
+                let query = if matches!(self.view, Some(View::Search(_))) { String::new() } else { query };
+                self.view = Some(View::Search(SearchView::new(self.root.clone(), self.tx.clone(), query, action == Action::ReplaceWorkspace)));
+                self.focus = Focus::Editor;
+            }
             Action::FindNext => self.find_step(true),
             Action::FindPrev => self.find_step(false),
             Action::ToggleWordWrap => {
@@ -1320,6 +1466,39 @@ impl App {
                 }
                 self.focus = Focus::Editor;
             }
+            Action::CloseOtherFiles => {
+                let keep = self.active_doc;
+                self.close_where("others", |i, _| i != keep);
+            }
+            Action::CloseAllFiles => self.close_where("all", |_, _| true),
+            Action::CloseFilesToRight => {
+                let keep = self.active_doc;
+                self.close_where("right", |i, _| i > keep);
+            }
+            Action::PinFile => self.toggle_pin(),
+            Action::ReopenClosedFile => self.reopen_closed(),
+            Action::RecentFiles => self.recent_files(),
+            Action::RecentLocations => self.recent_locations(),
+            Action::NewFile => self.prompt_new(false),
+            Action::NewFolder => self.prompt_new(true),
+            Action::RenamePath => self.prompt_rename(),
+            Action::DeletePath => self.delete_entry(),
+            Action::CopyRelativePath => self.copy_path(false),
+            Action::CopyAbsolutePath => self.copy_path(true),
+            Action::RevealInOs => self.reveal_in_os(),
+            Action::ToggleOutline => {
+                self.show_tree = true;
+                self.tree_mode = if self.tree_mode == TreeMode::Files { TreeMode::Outline } else { TreeMode::Files };
+                self.set_focus(Focus::Tree);
+            }
+            Action::SendSymbol => self.send_symbol(),
+            Action::Hover => self.hover(),
+            Action::RenameSymbol => self.prompt_rename_symbol(),
+            Action::CodeActions => self.code_actions(None),
+            Action::FormatDocument => self.format(false),
+            Action::FormatSelection => self.format(true),
+            Action::OrganizeImports => self.code_actions(Some("source.organizeImports")),
+            Action::AskMenu => self.ask_menu(),
             Action::ToggleTheme => {
                 self.settings.theme = if crate::theme::is_light() { "dark".into() } else { "light".into() };
                 settings::apply(&self.settings);
@@ -1593,6 +1772,7 @@ impl App {
                 }
             }
             Target::AgentTab(i) => self.show_agent(i),
+            Target::CodeAction(i) => self.apply_code_action(i),
             Target::Resume(kind, id) => {
                 if let Some(i) = self.agents.iter().position(|a| a.session_id.as_deref() == Some(&id)) {
                     return self.show_agent(i);
@@ -2009,8 +2189,10 @@ fn global_action(c: char) -> Option<Action> {
         'j' => Action::JumpToRef,
         's' => Action::SendSelection,
         'S' => Action::SendFile,
-        'e' => Action::Ask(Ask::Explain),
-        'F' => Action::FixProblem,
+        'e' => Action::AskMenu,
+        'T' => Action::ReopenClosedFile,
+        'F' => Action::FormatDocument,
+        'E' => Action::RecentFiles,
         'n' => Action::NextAgent,
         'g' => Action::Sessions,
         'v' => Action::ToggleSplit,
@@ -2020,6 +2202,7 @@ fn global_action(c: char) -> Option<Action> {
         'l' => Action::GoToSymbol,
         'k' => Action::GoToProjectSymbol,
         'i' => Action::Problems,
+        '/' => Action::SearchWorkspace,
         'z' => Action::Zoom,
         '-' => Action::GoBack,
         'q' => Action::Quit,

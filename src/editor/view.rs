@@ -540,7 +540,11 @@ impl Doc {
                 if bracket.is_some_and(|(a, b)| a == pos || b == pos) {
                     style = style.bg(theme::BRACKET_BG()).add_modifier(Modifier::BOLD);
                 }
-                if let Some(d) = line_diags.iter().find(|d| ci >= d.col && ci < underline_until(d.col)) {
+                let in_diag = |d: &&&Diagnostic| {
+                    let end = if d.end_line == li && d.end_col > d.col { d.end_col } else if d.end_line > li { usize::MAX } else { underline_until(d.col) };
+                    ci >= d.col && ci < end
+                };
+                if let Some(d) = line_diags.iter().find(in_diag) {
                     let color = match d.severity {
                         1 => theme::ERROR(),
                         2 => theme::WARN(),
