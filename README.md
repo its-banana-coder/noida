@@ -17,13 +17,13 @@ NOIDA doesn't reimplement Claude Code or Codex. It runs the real CLIs in a pseud
 
 ## Features
 
-- **Agent panes**: `claude`, `codex` and a shell in tabs, each in a real PTY
-- **Clickable file references**: `src/app.rs:42`, `src/app.rs:42:7`, `app.rs#L10-20`, `src/app.rs (lines 10-20)`, `Read(src/app.rs)` and git-diff style `a/src/app.rs` paths are detected. Only paths that exist on disk get highlighted.
+- **Agent panes**: `claude`, `codex` and a shell in tabs, each in a real PTY. Tab status shows `⠙` working, `●` idle, `✓` finished in the background, `!` wants attention (bell)
+- **Clickable file references**: `src/app.rs:42`, `src/app.rs:42:7`, `app.rs#L10-20`, `src/app.rs (lines 10-20)`, `Read(src/app.rs)` `index.ts around line 120` and git-diff style `a/src/app.rs` paths are detected. Shortened paths like `index.ts:146` or `engine/src/index.ts` are matched against project files, and if several files match you get a picker. Only paths that exist get highlighted.
 - **Jump by keyboard**: `Alt+j` labels every reference on screen. Press a label to open it, or `Enter` for the newest one.
 - **File tree** that respects `.gitignore`, shows files agents create, and reveals whatever you open
 - **Editor** with syntax highlighting (the same language set as `bat`), multiple open files, undo/redo, find, go to line and mouse selection
 - **Live reload**: open files update when the agent edits them, and NOIDA warns you if you have unsaved changes
-- **Send code to the agent**: select lines and press `Alt+s` to insert `@path#L10-20` into the agent prompt
+- **Send code to the agent**: select lines and press `Alt+s` to insert `@path#L10-20` into the agent prompt, or `Alt+Shift+S` for `@path`
 - **Fuzzy file open** (`Alt+o` / `Ctrl+P`), jump history (`Alt+-`), resizable and zoomable panes
 
 ## Installation
@@ -107,6 +107,7 @@ NOIDA's global shortcuts use **Alt** so that ordinary keys still reach the agent
 | Click a highlighted path | Open it at that line |
 | `Alt+o`, `Ctrl+P` | Fuzzy open file (type `name:120` to jump to a line) |
 | `Alt+s` | Send editor selection (or current line) to the agent as `@path#Lx-y` |
+| `Alt+Shift+S` | Send the current file to the agent as `@path` |
 | `Alt+-` | Go back to previous location |
 | `Alt+n` | Next agent tab (or click a tab) |
 | `Alt+z` | Zoom focused pane |

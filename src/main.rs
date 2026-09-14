@@ -30,6 +30,7 @@ KEYS:
     click       a highlighted path in the agent pane opens it at that line
     Alt+o       open file (fuzzy), also Ctrl+P outside the agent pane
     Alt+s       send selection as @path#Lx-y to the agent
+    Alt+S       send current file as @path to the agent
     Alt+n       next agent tab                   Alt+z   zoom pane
     Alt+, Alt+. resize agent pane (or drag divider)
     Alt+-       go back to previous location     Alt+q   quit

@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
+use ignore::WalkBuilder;
 use regex::Regex;
 
 static REF_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -15,7 +16,7 @@ static REF_RE: LazyLock<Regex> = LazyLock::new(|| {
             (?: : | \#L ) (?P<l1>\d+)
             (?: : (?P<c1>\d+) | -L? (?P<e1>\d+) )?
           |
-            `? \)? ,? \s+ (?: at \s+ | on \s+ | in \s+ )? \(? lines? \s+ (?P<l2>\d+)
+            `? \)? ,? \s+ (?: (?:at|on|in|around|near) \s+ )? \(? lines? \s+ (?P<l2>\d+)
             (?: \s* [-–] \s* (?P<e2>\d+) )?
         )?",
     )
@@ -28,6 +29,8 @@ pub struct FileRef {
     pub line: Option<usize>,
     pub end_line: Option<usize>,
     pub col: Option<usize>,
+    /// Set when a partial path (e.g. `index.ts`) matched several files.
+    pub ambiguous: Option<String>,
     /// Screen segments covered by the reference: (row, start_col, end_col exclusive).
     pub segments: Vec<(u16, u16, u16)>,
 }
@@ -40,11 +43,56 @@ impl FileRef {
     }
 }
 
+/// All project files, for fuzzy open and resolving partial paths.
+#[derive(Default)]
+pub struct FileIndex {
+    pub files: Vec<String>,
+    by_name: HashMap<String, Vec<usize>>,
+}
+
+impl FileIndex {
+    pub fn build(root: &Path) -> Self {
+        let mut index = Self::default();
+        let walk = WalkBuilder::new(root)
+            .hidden(false)
+            .require_git(false)
+            .filter_entry(|e| e.file_name() != ".git")
+            .build();
+        for entry in walk.filter_map(Result::ok).take(200_000) {
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
+                continue;
+            }
+            let rel = relative(root, entry.path()).into_owned();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            index.by_name.entry(name).or_default().push(index.files.len());
+            index.files.push(rel);
+        }
+        index
+    }
+
+    /// Files whose relative path equals `partial` or ends with `/partial`.
+    pub fn find_suffix(&self, partial: &str) -> Vec<&str> {
+        let name = partial.rsplit('/').next().unwrap_or(partial);
+        let Some(ids) = self.by_name.get(name) else { return Vec::new() };
+        ids.iter()
+            .map(|&i| self.files[i].as_str())
+            .filter(|f| *f == partial || (f.ends_with(partial) && f.as_bytes()[f.len() - partial.len() - 1] == b'/'))
+            .collect()
+    }
+}
+
+#[derive(Clone)]
+pub struct Resolved {
+    pub path: PathBuf,
+    pub ambiguous: bool,
+}
+
 /// Caches filesystem existence checks so we can scan every frame cheaply.
 pub struct Resolver {
     root: PathBuf,
     home: Option<PathBuf>,
-    cache: HashMap<String, (Option<PathBuf>, Instant)>,
+    index: Arc<FileIndex>,
+    cache: HashMap<String, (Option<Resolved>, Instant)>,
 }
 
 impl Resolver {
@@ -52,11 +100,17 @@ impl Resolver {
         Self {
             root,
             home: std::env::var_os("HOME").map(PathBuf::from),
+            index: Arc::default(),
             cache: HashMap::new(),
         }
     }
 
-    pub fn resolve(&mut self, token: &str) -> Option<PathBuf> {
+    pub fn set_index(&mut self, index: Arc<FileIndex>) {
+        self.index = index;
+        self.cache.clear();
+    }
+
+    pub fn resolve(&mut self, token: &str) -> Option<Resolved> {
         if let Some((hit, at)) = self.cache.get(token) {
             if at.elapsed() < Duration::from_secs(2) {
                 return hit.clone();
@@ -71,7 +125,7 @@ impl Resolver {
         hit
     }
 
-    fn resolve_uncached(&self, token: &str) -> Option<PathBuf> {
+    fn resolve_uncached(&self, token: &str) -> Option<Resolved> {
         // Bare words are almost never references; require a separator or extension.
         if !token.contains('/') && !token.contains('.') {
             return None;
@@ -98,9 +152,21 @@ impl Resolver {
             }
         }
         // Directories only count inside the project (skips shell prompts like `~/project$`).
-        candidates
+        let direct = candidates
             .into_iter()
-            .find(|p| p.is_file() || (p.is_dir() && p.starts_with(&self.root) && *p != self.root))
+            .find(|p| p.is_file() || (p.is_dir() && p.starts_with(&self.root) && *p != self.root));
+        if let Some(path) = direct {
+            return Some(Resolved { path, ambiguous: false });
+        }
+        // Agents often shorten paths (`index.ts:146`, `engine/src/index.ts`); look them up.
+        let partial = token.trim_start_matches("./");
+        let partial = partial.strip_prefix("a/").or(partial.strip_prefix("b/")).unwrap_or(partial);
+        if partial.starts_with('/') || partial.starts_with('~') || !partial.rsplit('/').next()?.contains('.') {
+            return None;
+        }
+        let matches = self.index.find_suffix(partial);
+        let first = matches.first()?;
+        Some(Resolved { path: self.root.join(first), ambiguous: matches.len() > 1 })
     }
 }
 
@@ -141,7 +207,7 @@ fn scan_line(
 ) {
     for caps in REF_RE.captures_iter(text) {
         let path_m = caps.name("path").unwrap();
-        let Some(path) = resolver.resolve(path_m.as_str()) else { continue };
+        let Some(resolved) = resolver.resolve(path_m.as_str()) else { continue };
         let num = |name: &str| caps.name(name).and_then(|m| m.as_str().parse().ok());
         let whole = caps.get(0).unwrap();
         // Only extend the highlight over the line suffix when we understood it.
@@ -151,7 +217,8 @@ fn scan_line(
             path_m.end()
         };
         out.push(FileRef {
-            path,
+            path: resolved.path,
+            ambiguous: resolved.ambiguous.then(|| path_m.as_str().to_string()),
             line: num("l1").or(num("l2")),
             end_line: num("e1").or(num("e2")),
             col: num("c1"),
@@ -196,6 +263,7 @@ mod tests {
         let mut parser = vt100::Parser::new(5, 80, 0);
         parser.process(text.as_bytes());
         let mut r = Resolver::new(root.to_path_buf());
+        r.set_index(Arc::new(FileIndex::build(root)));
         scan_screen(parser.screen(), &mut r)
     }
 
@@ -220,6 +288,25 @@ mod tests {
             ]
         );
         assert_eq!(refs[0].segments, vec![(0, 4, 20)]);
+    }
+
+    #[test]
+    fn partial_paths() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let refs = scan("bug in editor.rs:88, see agent.rs around line 12; e.g. claude.ai", root);
+        let got: Vec<_> = refs
+            .iter()
+            .map(|r| (relative(root, &r.path).to_string(), r.line, r.ambiguous.is_some()))
+            .collect();
+        assert_eq!(got, vec![("src/editor.rs".into(), Some(88), false), ("src/agent.rs".into(), Some(12), false)]);
+
+        let mut index = FileIndex::default();
+        for (i, f) in ["a/index.ts", "b/index.ts", "xindex.ts"].iter().enumerate() {
+            index.files.push(f.to_string());
+            index.by_name.entry(f.rsplit('/').next().unwrap().to_string()).or_default().push(i);
+        }
+        assert_eq!(index.find_suffix("index.ts"), vec!["a/index.ts", "b/index.ts"]);
+        assert_eq!(index.find_suffix("b/index.ts"), vec!["b/index.ts"]);
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! Top-level application state, input routing and layout.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use ignore::WalkBuilder;
 use ratatui::Frame;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -14,7 +14,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Widget};
 
 use crate::agent::{Agent, HINT_KEYS, PtyEvent, hint_label};
 use crate::editor::{Doc, KeyResult, Syntax};
-use crate::refs::{self, FileRef, Resolver};
+use crate::refs::{self, FileIndex, FileRef, Resolver};
 use crate::theme;
 use crate::tree::{Activate, Tree};
 
@@ -82,7 +82,9 @@ pub struct App {
     back: Vec<(PathBuf, usize, usize)>,
     last_find: String,
     tx: Sender<PtyEvent>,
-    file_index: Option<(Vec<String>, Instant)>,
+    file_index: Arc<FileIndex>,
+    index_built: Option<Instant>,
+    index_rx: Option<Receiver<FileIndex>>,
     last_disk_check: Instant,
     last_tree_refresh: Instant,
     quit_armed: Option<Instant>,
@@ -97,7 +99,7 @@ impl App {
             .enumerate()
             .map(|(i, (name, cmd))| Agent::new(i, name, cmd))
             .collect();
-        Self {
+        let mut app = Self {
             syntax: Syntax::load(),
             tree: Tree::new(root.clone()),
             resolver: Resolver::new(root.clone()),
@@ -120,13 +122,42 @@ impl App {
             back: Vec::new(),
             last_find: String::new(),
             tx,
-            file_index: None,
+            file_index: Arc::default(),
+            index_built: None,
+            index_rx: None,
             last_disk_check: Instant::now(),
             last_tree_refresh: Instant::now(),
             quit_armed: None,
             quit: false,
             host_out: Vec::new(),
+        };
+        app.rebuild_index();
+        app
+    }
+
+    /// Walk the project on a background thread; large repos shouldn't stall input.
+    fn rebuild_index(&mut self) {
+        if self.index_rx.is_some() {
+            return;
         }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root = self.root.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(FileIndex::build(&root));
+        });
+        self.index_rx = Some(rx);
+    }
+
+    fn poll_index(&mut self) -> bool {
+        let Some(Ok(index)) = self.index_rx.as_ref().map(|rx| rx.try_recv()) else { return false };
+        self.index_rx = None;
+        self.index_built = Some(Instant::now());
+        self.file_index = Arc::new(index);
+        self.resolver.set_index(self.file_index.clone());
+        if matches!(self.mode, Mode::QuickOpen { .. }) {
+            self.update_quick_open();
+        }
+        true
     }
 
     fn info(&mut self, msg: impl Into<String>) {
@@ -175,7 +206,14 @@ impl App {
 
     /// Periodic work: reload files changed by agents, refresh the tree.
     pub fn tick(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.poll_index();
+        if self.index_built.is_some_and(|t| t.elapsed() > Duration::from_secs(30)) {
+            self.rebuild_index();
+        }
+        let visible = self.active_agent;
+        for (i, a) in self.agents.iter_mut().enumerate() {
+            changed |= a.update_status(i == visible);
+        }
         if self.last_disk_check.elapsed() > Duration::from_millis(500) {
             self.last_disk_check = Instant::now();
             for i in 0..self.docs.len() {
@@ -285,9 +323,11 @@ impl App {
             'j' => self.start_hints(),
             'o' => self.start_quick_open(),
             's' => self.send_selection(),
+            'S' => self.send_file(),
             'n' => {
                 if !self.agents.is_empty() {
                     self.active_agent = (self.active_agent + 1) % self.agents.len();
+                    self.agents[self.active_agent].seen();
                     self.set_focus(Focus::Agent);
                 }
             }
@@ -530,6 +570,7 @@ impl App {
                 } else if y == agent_block.y && inside(agent_block) {
                     if let Some(&(_, _, i)) = self.rects.agent_tabs.iter().find(|(a, b, _)| x >= *a && x < *b) {
                         self.active_agent = i;
+                        self.agents[i].seen();
                     }
                     self.set_focus(Focus::Agent);
                 } else if y == self.rects.editor_block.y && inside(self.rects.editor_block) {
@@ -615,6 +656,16 @@ impl App {
     // ---- navigation ----
 
     fn open_ref(&mut self, r: &FileRef) {
+        if let Some(partial) = &r.ambiguous {
+            // Several files match a shortened path: let the user pick.
+            let query = match r.line {
+                Some(l) => format!("{partial}:{l}"),
+                None => partial.clone(),
+            };
+            self.mode = Mode::QuickOpen { query, results: Vec::new(), selected: 0 };
+            self.update_quick_open();
+            return self.info(format!("{partial} matches several files — pick one"));
+        }
         self.open_location(&r.path.clone(), r.line, r.col, r.end_line);
     }
 
@@ -690,20 +741,20 @@ impl App {
         }
     }
 
+    fn send_file(&mut self) {
+        let Some(doc) = self.docs.get(self.active_doc) else {
+            return self.info("open a file first");
+        };
+        let text = format!("@{} ", refs::relative(&self.root, &doc.path));
+        self.set_focus(Focus::Agent);
+        if let Some(a) = self.agent() {
+            a.paste(&text);
+        }
+    }
+
     fn start_quick_open(&mut self) {
-        let stale = self.file_index.as_ref().is_none_or(|(_, t)| t.elapsed() > Duration::from_secs(10));
-        if stale {
-            let files: Vec<String> = WalkBuilder::new(&self.root)
-                .hidden(false)
-                .require_git(false)
-                .filter_entry(|e| e.file_name() != ".git")
-                .build()
-                .filter_map(Result::ok)
-                .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
-                .take(200_000)
-                .map(|e| refs::relative(&self.root, e.path()).into_owned())
-                .collect();
-            self.file_index = Some((files, Instant::now()));
+        if self.index_built.is_none_or(|t| t.elapsed() > Duration::from_secs(10)) {
+            self.rebuild_index();
         }
         self.mode = Mode::QuickOpen { query: String::new(), results: Vec::new(), selected: 0 };
         self.update_quick_open();
@@ -711,7 +762,7 @@ impl App {
 
     fn update_quick_open(&mut self) {
         let Mode::QuickOpen { query, results, selected } = &mut self.mode else { return };
-        let Some((files, _)) = &self.file_index else { return };
+        let files = &self.file_index.files;
         let (q, _) = refs::split_line_suffix(query);
         let q = q.to_lowercase();
         if q.is_empty() {
@@ -812,8 +863,7 @@ impl App {
             let mut spans = vec![Span::raw(" ")];
             let mut x = agent_block.x + 2;
             for (i, a) in self.agents.iter().enumerate() {
-                let dot = if a.running() { "●" } else { "○" };
-                let label = format!(" {dot} {} ", a.name);
+                let label = format!(" {} {} ", a.status_glyph(), a.name);
                 let w = label.chars().count() as u16;
                 self.rects.agent_tabs.push((x, x + w, i));
                 x += w + 1;
@@ -878,7 +928,7 @@ impl App {
                 None => (
                     match self.focus {
                         Focus::Tree => "↑↓ move  ⏎ open  ← collapse  r refresh  │  Alt+2 editor  Alt+3 agent  Alt+o files  Alt+q quit",
-                        Focus::Editor => "^S save  ^F find  ^G line  ^P files  ^W close  │  Alt+s send to agent  Alt+- back  Alt+3 agent",
+                        Focus::Editor => "^S save  ^F find  ^G line  ^P files  ^W close  │  Alt+s send lines  Alt+S send file  Alt+- back",
                         Focus::Agent => "Alt+j jump to file ref  click refs  Alt+n next agent  │  Alt+2 editor  Alt+1 files  Alt+z zoom",
                     }
                     .into(),

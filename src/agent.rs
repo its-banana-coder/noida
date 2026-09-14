@@ -3,6 +3,7 @@
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -25,9 +26,14 @@ pub enum PtyEvent {
 pub struct Responder {
     pub to_pty: Vec<u8>,
     pub to_host: Vec<u8>,
+    pub bell: bool,
 }
 
 impl vt100::Callbacks for Responder {
+    fn audible_bell(&mut self, _: &mut vt100::Screen) {
+        self.bell = true;
+    }
+
     fn unhandled_csi(&mut self, screen: &mut vt100::Screen, i1: Option<u8>, i2: Option<u8>, params: &[&[u16]], c: char) {
         let p0 = params.first().and_then(|p| p.first()).copied().unwrap_or(0);
         let reply = match (i1, i2, c, p0) {
@@ -91,7 +97,20 @@ pub struct Agent {
     pub exited: bool,
     pub error: Option<String>,
     size: (u16, u16),
+    last_output: Option<Instant>,
+    last_input: Option<Instant>,
+    working: bool,
+    /// Rang the bell, or finished work while in a background tab.
+    attention: Option<Attention>,
 }
+
+#[derive(Clone, Copy, PartialEq)]
+enum Attention {
+    Bell,
+    Finished,
+}
+
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 impl Agent {
     pub fn new(id: usize, name: &str, command: &str) -> Self {
@@ -106,6 +125,10 @@ impl Agent {
             exited: false,
             error: None,
             size: (24, 80),
+            last_output: None,
+            last_input: None,
+            working: false,
+            attention: None,
         }
     }
 
@@ -171,13 +194,54 @@ impl Agent {
             // Keep the viewport stable while the user reads scrollback.
             self.parser.screen_mut().set_scrollback(before);
         }
+        self.last_output = Some(Instant::now());
         let cb = self.parser.callbacks_mut();
+        if std::mem::take(&mut cb.bell) {
+            self.attention = Some(Attention::Bell);
+        }
         let reply = std::mem::take(&mut cb.to_pty);
         let host = std::mem::take(&mut cb.to_host);
         if !reply.is_empty() {
             self.write(&reply);
         }
         host
+    }
+
+    /// Recompute working/idle; returns true while the tab label needs redrawing.
+    pub fn update_status(&mut self, visible: bool) -> bool {
+        // Output right after a keystroke is just echo, not the agent working.
+        let working = self.running()
+            && self.last_output.is_some_and(|out| {
+                out.elapsed() < Duration::from_millis(1500)
+                    && self.last_input.is_none_or(|inp| out.saturating_duration_since(inp) > Duration::from_millis(700))
+            });
+        let changed = working != self.working;
+        if self.working && !working && !visible && self.attention.is_none() {
+            self.attention = Some(Attention::Finished);
+        }
+        self.working = working;
+        changed || working
+    }
+
+    pub fn seen(&mut self) {
+        self.attention = None;
+    }
+
+    pub fn status_glyph(&self) -> &'static str {
+        if self.error.is_some() || self.exited {
+            "✗"
+        } else if !self.started() {
+            "○"
+        } else if self.attention == Some(Attention::Bell) {
+            "!"
+        } else if self.working {
+            let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+            SPINNER[(ms / 100) as usize % SPINNER.len()]
+        } else if self.attention == Some(Attention::Finished) {
+            "✓"
+        } else {
+            "●"
+        }
     }
 
     pub fn on_exit(&mut self) {
@@ -225,6 +289,8 @@ impl Agent {
             return;
         }
         self.parser.screen_mut().set_scrollback(0);
+        self.last_input = Some(Instant::now());
+        self.attention = None;
         let bytes = encode_key(key, self.parser.screen().application_cursor());
         self.write(&bytes);
     }
@@ -232,6 +298,7 @@ impl Agent {
     pub fn paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
         self.parser.screen_mut().set_scrollback(0);
+        self.last_input = Some(Instant::now());
         if self.parser.screen().bracketed_paste() {
             self.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
         } else {
