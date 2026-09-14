@@ -2,6 +2,9 @@
 
 **Navigation-Oriented IDE for Developer Agents** — a terminal IDE where your coding agent runs on the right, your code sits on the left, and every file reference the agent prints is clickable.
 
+> [!WARNING]
+> **Early preview (v0.1 alpha).** NOIDA is under heavy development and has only been tested on Linux (WSL2). Expect rough edges, and please [report what breaks](#feedback). See [Project status](#project-status) for what's been tested.
+
 ```text
 ╭ FILES ──────────╮╭ session.ts ─────────────────────╮╭ ● claude  ○ codex  ○ shell ─────────╮
 │▾ src            ││ 85                              ││ > Where is the auth logic?          │
@@ -182,11 +185,38 @@ NOIDA's global shortcuts use **Alt**, so ordinary keys still reach the agent. Th
 - `codex` is started with `-c notify=[noida, hook-codex]` to report finished turns.
 - Workspace state lives in `~/.local/share/noida/workspaces/`, agent history in `~/.local/share/noida/history/`. Start with `--fresh` to skip restoring.
 
+## Project status
+
+**Tested live** on Linux (WSL2, Ubuntu) in tmux / Windows Terminal, with Claude Code 2.1, Codex CLI and rust-analyzer:
+- Clicking file references and labelled jumps from agent output
+- Agent tabs, split panes, hook-based status, activity timeline, sessions picker and resuming conversations, workspace restore
+- Review changes with per-hunk accept and reject; worktree agents (create, apply)
+- Go to definition, references, problems, hover and rename via rust-analyzer; tree-sitter symbols
+- Editing, multi-cursor, the find widget, saving, and reloading files that agents change
+
+**Built and unit-tested, but barely exercised by hand yet:** workspace search and replace, tabs (preview, pin, close variants), file tree operations, outline panel, folding, word wrap, sticky scroll, code actions, formatting, the light theme.
+
+**Not tested yet:** macOS, native Windows, terminals other than Windows Terminal and tmux, very large repositories, language servers other than rust-analyzer.
+
+**Things to know**
+- Agents run inside NOIDA, so if NOIDA crashes the agent processes stop too. Your terminal is restored, and conversations can be resumed from **Sessions** (`Alt+g`).
+- On launch NOIDA restores the last workspace, including resuming the previous Claude conversation. Use `--fresh` to start clean.
+- Destructive actions (reject hunk/file, delete file, replace in workspace, remove worktree) ask you to confirm by pressing again. Rejected changes are gone from disk. Commit or stash anything you care about first.
+- NOIDA adds its hooks to agents it starts via `--settings`. Your Claude/Codex config files are not modified.
+
 ## Known limitations
 
 - `Shift+Enter` can't be told apart from `Enter` in most terminals. Use the agent's own newline shortcut (in Claude Code, `\` then `Enter`).
 - The Alt shortcuts above aren't passed through to the agent.
 - Language features need the language server installed (e.g. `rustup component add rust-analyzer`, `npm i -g typescript-language-server typescript`).
+
+## Feedback
+
+Please [open an issue](https://github.com/its-banana-coder/noida/issues) with:
+- OS and terminal (e.g. "Ubuntu on WSL2, Windows Terminal 1.21")
+- Agent CLI and version (`claude --version`, `codex --version`)
+- What you did, what you expected, and what happened
+- For a reference that didn't become clickable, the exact line of agent output
 
 ## Development
 
