@@ -17,16 +17,11 @@
 
 </div>
 
-```text
-╭ FILES ──────────╮╭ session.ts ─────────────────────╮╭ ● claude  ○ codex  ○ shell ─────────╮
-│▾ src            ││ 85                              ││ > Where is the auth logic?          │
-│  ▾ auth         ││ 86                              ││                                     │
-│    session.ts M ││ 87 function refreshSession() {  ││ The refresh happens in              │
-│    token.ts     ││ 88   ...                        ││ src/auth/session.ts:87  ← click it  │
-│  ▸ api          ││                                 ││                                     │
-╰─────────────────╯╰─────────────────────────────────╯╰─────────────────────────────────────╯
- NOIDA  src/auth/session.ts:87                                     ⎇ main ±3  ✗0 ⚠2  Ln 87
-```
+<p align="center">
+  <img src="docs/screenshot.png" alt="NOIDA: file tree, editor with syntax highlighting, and Claude Code running side by side" width="100%">
+  <br>
+  <sub>File tree · editor · Claude Code in its real terminal, all in one terminal window</sub>
+</p>
 
 > [!WARNING]
 > **Early preview (v0.1 alpha).** NOIDA is moving fast and has only been tested on Linux (WSL2). Expect rough edges and please [tell us what breaks](#-feedback).
