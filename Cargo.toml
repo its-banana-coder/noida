@@ -14,6 +14,7 @@ categories = ["command-line-utilities", "text-editors"]
 anyhow = "1.0.104"
 ignore = "0.4.33"
 portable-pty = "0.9.0"
+pulldown-cmark = { version = "0.13.4", default-features = false }
 ratatui = "0.30.2"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }

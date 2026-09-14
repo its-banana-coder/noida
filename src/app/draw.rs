@@ -178,6 +178,38 @@ impl App {
         let (breadcrumbs, sticky) = (self.settings.breadcrumbs, self.settings.sticky_scroll);
         let focused = focused || (self.focus == Focus::Editor && matches!(self.mode, Mode::Find(_)));
         match self.docs.get_mut(self.active_doc) {
+            Some(doc) if doc.md_preview => {
+                if area.height < 2 || area.width < 10 {
+                    return None;
+                }
+                let head = Rect::new(area.x, area.y, area.width, 1);
+                buf.set_style(head, Style::default().bg(theme::STATUS_BG()));
+                let title = format!(" {} · preview ", refs::relative(&root, &doc.path));
+                buf.set_stringn(head.x, head.y, &title, head.width as usize, Style::default().fg(theme::DIM()).bg(theme::STATUS_BG()));
+                let hint = "Alt+m edit ";
+                buf.set_string(head.x + head.width.saturating_sub(hint.len() as u16), head.y, hint, Style::default().fg(theme::ACCENT()).bg(theme::STATUS_BG()));
+                let body = Rect::new(area.x + 1, area.y + 1, area.width.saturating_sub(2), area.height - 1);
+                let lines = doc.markdown_lines(body.width);
+                let max_scroll = lines.len().saturating_sub(body.height as usize);
+                doc.md_scroll = doc.md_scroll.min(max_scroll);
+                for (row, line) in lines.iter().skip(doc.md_scroll).take(body.height as usize).enumerate() {
+                    let mut x = body.x;
+                    let y = body.y + row as u16;
+                    for (text, style) in line {
+                        let end = body.x + body.width;
+                        if x >= end {
+                            break;
+                        }
+                        x = buf.set_stringn(x, y, text, (end - x) as usize, *style).0;
+                    }
+                }
+                if lines.len() > body.height as usize {
+                    let pct = (doc.md_scroll * 100) / max_scroll.max(1);
+                    let tag = format!(" {pct}% ");
+                    buf.set_string(head.x + head.width.saturating_sub(hint.len() as u16 + tag.len() as u16 + 1), head.y, tag, Style::default().fg(theme::DIM()).bg(theme::STATUS_BG()));
+                }
+                None
+            }
             Some(doc) => {
                 let mut text_area = area;
                 if breadcrumbs && area.height > 4 {

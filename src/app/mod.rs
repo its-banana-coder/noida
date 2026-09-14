@@ -986,6 +986,25 @@ impl App {
             }
             return;
         };
+        if key.code == KeyCode::Char('m') && alt && crate::markdown::is_markdown(&doc.path) {
+            doc.md_preview = !doc.md_preview;
+            let msg = if doc.md_preview { "markdown preview (Alt+m to edit)" } else { "editing markdown source (Alt+m to preview)" };
+            return self.info(msg);
+        }
+        if doc.md_preview {
+            let page = self.rects.editor.height.saturating_sub(2) as usize;
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => doc.md_scroll += 1,
+                KeyCode::Up | KeyCode::Char('k') => doc.md_scroll = doc.md_scroll.saturating_sub(1),
+                KeyCode::PageDown | KeyCode::Char(' ') => doc.md_scroll += page,
+                KeyCode::PageUp => doc.md_scroll = doc.md_scroll.saturating_sub(page),
+                KeyCode::Home | KeyCode::Char('g') => doc.md_scroll = 0,
+                KeyCode::End | KeyCode::Char('G') => doc.md_scroll = usize::MAX / 2,
+                KeyCode::Char('c') if ctrl => {}
+                _ => self.info("markdown preview — press Alt+m to edit"),
+            }
+            return;
+        }
         let result = doc.handle_key(key);
         if doc.dirty {
             doc.preview = false;
@@ -1351,7 +1370,11 @@ impl App {
                         Some(View::Search(v)) => v.scroll_by(delta),
                         None => {
                             if let Some(doc) = self.docs.get_mut(self.active_doc) {
-                                doc.scroll(delta);
+                                if doc.md_preview {
+                                    doc.md_scroll = (doc.md_scroll as isize + delta).max(0) as usize;
+                                } else {
+                                    doc.scroll(delta);
+                                }
                             }
                         }
                     }
@@ -1502,6 +1525,15 @@ impl App {
                 self.set_focus(Focus::Tree);
             }
             Action::SendSymbol => self.send_symbol(),
+            Action::ToggleMarkdownPreview => {
+                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    if crate::markdown::is_markdown(&doc.path) {
+                        doc.md_preview = !doc.md_preview;
+                    } else {
+                        self.info("not a markdown file");
+                    }
+                }
+            }
             Action::Hover => self.hover(),
             Action::RenameSymbol => self.prompt_rename_symbol(),
             Action::CodeActions => self.code_actions(None),

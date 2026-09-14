@@ -140,6 +140,7 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 - **Find/replace** with case, word, regex (`$1`) and in-selection options
 - **Workspace search & replace** (`Alt+/`) with a replacement preview and per-match excludes
 - Auto-closing brackets and tags, comments, move/copy/delete line
+- **Markdown preview**: `.md` files open rendered (headings, lists, tables, code, callouts); `Alt+m` switches to editing
 - Folding, word wrap, sticky scroll, breadcrumbs
 - Preview and pinned tabs, reopen closed tab, recent files
 

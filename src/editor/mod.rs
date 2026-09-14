@@ -113,6 +113,10 @@ pub struct Doc {
     /// Preview tabs are replaced by the next preview until edited or pinned.
     pub preview: bool,
     pub pinned: bool,
+    /// Show Markdown rendered instead of as source.
+    pub md_preview: bool,
+    pub md_scroll: usize,
+    md_cache: Option<(u64, u16, bool, std::rc::Rc<Vec<crate::markdown::MdLine>>)>,
     lines: Vec<String>,
     cursors: Vec<Cursor>,
     top: (usize, usize),
@@ -165,6 +169,9 @@ impl Doc {
             path: path.to_path_buf(),
             preview: false,
             pinned: false,
+            md_preview: crate::markdown::is_markdown(path),
+            md_scroll: 0,
+            md_cache: None,
             lines: Vec::new(),
             cursors: vec![Cursor::at((0, 0))],
             top: (0, 0),
@@ -434,6 +441,19 @@ impl Doc {
         let ((sl, _), (el, ec)) = self.primary().range();
         let el = if ec == 0 && el > sl { el - 1 } else { el };
         (sl + 1, el + 1)
+    }
+
+    /// Rendered Markdown lines for the preview, cached per edit and width.
+    pub fn markdown_lines(&mut self, width: u16) -> std::rc::Rc<Vec<crate::markdown::MdLine>> {
+        let light = crate::theme::is_light();
+        if let Some((edits, w, l, lines)) = &self.md_cache {
+            if *edits == self.edits && *w == width && *l == light {
+                return lines.clone();
+            }
+        }
+        let lines = std::rc::Rc::new(crate::markdown::render(&self.text(), width as usize));
+        self.md_cache = Some((self.edits, width, light, lines.clone()));
+        lines
     }
 
     pub fn uses_tabs(&self) -> bool {

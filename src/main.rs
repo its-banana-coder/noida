@@ -7,6 +7,7 @@ mod events;
 mod git;
 mod hooks;
 mod lsp;
+mod markdown;
 mod picker;
 mod refs;
 mod sessions;
