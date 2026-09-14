@@ -128,9 +128,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, opts: app::Options, open: Option
     if let Some(p) = open {
         app.open_path(&p, line);
     }
-    // Draw once so agent PTYs start at the real pane size.
+    // Draw once so the agent PTY starts at the real pane size.
     terminal.draw(|f| app.draw(f))?;
-    app.start_visible_agents();
+    app.ensure_agent_started();
 
     let mut dirty = true;
     loop {

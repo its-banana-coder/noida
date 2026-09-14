@@ -101,6 +101,7 @@ struct Rects {
     agents: [Rect; 2],
     doc_tabs: Vec<(u16, u16, usize)>,
     agent_tabs: [Vec<(u16, u16, usize)>; 2],
+    agent_closes: [Vec<(u16, usize)>; 2],
 }
 
 type Loc = (PathBuf, usize, usize);
@@ -321,7 +322,8 @@ impl App {
             let n = self.agents.len();
             if n > 0 {
                 self.slots = [ws.slots[0].min(n - 1), ws.slots[1].min(n - 1)];
-                self.split = ws.split && n > 1 && self.slots[0] != self.slots[1];
+                // Launch with a single agent pane; other tabs start when opened.
+                self.split = false;
             }
         }
     }
@@ -1216,6 +1218,8 @@ impl App {
                     self.drag = Drag::TreeDivider;
                 } else if self.split && y == agent_blocks[1].y && inside(agent_blocks[1]) && x < agent_blocks[1].x + 2 {
                     self.drag = Drag::SplitDivider;
+                } else if let Some(i) = title_slot.and_then(|s| self.rects.agent_closes[s].iter().find(|(cx, _)| *cx == x).map(|c| c.1)) {
+                    self.close_agent_at(i);
                 } else if let Some(slot) = title_slot {
                     let hit = self.rects.agent_tabs[slot].iter().find(|(a, b, _)| x >= *a && x < *b).map(|t| t.2);
                     if let Some(i) = hit {
@@ -1289,6 +1293,12 @@ impl App {
                             a.forward_mouse(m, agent_areas[slot]);
                         }
                     }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Middle) if (0..2).any(|s| self.rects.agent_blocks[s].width > 0 && y == self.rects.agent_blocks[s].y) => {
+                let slot = (0..2).find(|&s| y == self.rects.agent_blocks[s].y).unwrap_or(0);
+                if let Some(i) = self.rects.agent_tabs[slot].iter().find(|(a, b, _)| x >= *a && x < *b).map(|t| t.2) {
+                    self.close_agent_at(i);
                 }
             }
             MouseEventKind::Down(MouseButton::Middle) if y == self.rects.editor_block.y => {
@@ -1822,10 +1832,14 @@ impl App {
 
     fn close_agent(&mut self) {
         let idx = self.active_agent();
+        self.close_agent_at(idx);
+    }
+
+    fn close_agent_at(&mut self, idx: usize) {
         let Some(a) = self.agents.get(idx) else { return };
         let (running, name, worktree) = (a.running(), a.name.clone(), a.worktree.clone());
-        if running && !self.confirmed("close-agent") {
-            return self.error(format!("{name} is still running — run Close Tab again to stop it"));
+        if running && !self.confirmed(&format!("close-agent-{}", a.id)) {
+            return self.error(format!("{name} is still running — click ✕ again (or Alt+W) to stop it"));
         }
         if let Some((_, branch)) = worktree {
             self.info(format!("closed tab; worktree {branch} kept (use Worktree: Remove to delete it)"));
@@ -2191,6 +2205,7 @@ fn global_action(c: char) -> Option<Action> {
         'S' => Action::SendFile,
         'e' => Action::AskMenu,
         'T' => Action::ReopenClosedFile,
+        'W' => Action::CloseAgent,
         'F' => Action::FormatDocument,
         'E' => Action::RecentFiles,
         'n' => Action::NextAgent,

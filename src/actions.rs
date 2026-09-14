@@ -186,7 +186,7 @@ impl Action {
             Action::Ask(a) => Some((format!("Ask Agent: {}", a.label()), "")),
             Action::NextAgent => s("Agent: Next Tab", "Alt+n"),
             Action::NewAgent(k) => Some((format!("Agent: New {} Tab", title(k.name())), "")),
-            Action::CloseAgent => s("Agent: Close Tab", ""),
+            Action::CloseAgent => s("Agent: Close Tab", "Alt+W"),
             Action::RestartAgent => s("Agent: Restart", ""),
             Action::ToggleSplit => s("View: Split Agent Panes", "Alt+v"),
             Action::OtherAgentPane => s("Focus: Other Agent Pane", "Alt+w"),

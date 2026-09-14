@@ -169,6 +169,7 @@ Global shortcuts use **Alt**, so ordinary keys still reach your agent, and they 
 | `Alt+1/2/3` | Focus files / editor / agent | `Alt+0` | Toggle file tree |
 | `Alt+j` | Jump to a reference in agent output | `Alt+g` | Sessions: switch, new, resume |
 | `Alt+n` / `Alt+v` / `Alt+w` | Next agent / split / other pane | `Alt+s` / `Alt+S` | Send selection / file |
+| `Alt+W`, click `✕` | Close agent tab | `Alt+F` | Format document |
 | `Alt+e` | Ask agent… | `Alt+/` | Search in workspace |
 | `Alt+r` | Review changes | `Alt+a` | Agent activity |
 | `Alt+l` / `Alt+k` | Symbols in file / project | `Alt+i` | Problems |
@@ -208,7 +209,7 @@ Global shortcuts use **Alt**, so ordinary keys still reach your agent, and they 
 
 **Review changes**: `↑/↓` hunks · `Tab` next file · `a` accept hunk · `x` reject hunk · `A`/`X` whole file · `Enter` open · `r` refresh · `Esc` close
 
-**Agent pane**: every key goes to the agent · mouse wheel scrolls back · click a highlighted path or symbol to open it
+**Agent pane**: every key goes to the agent · mouse wheel scrolls back · click a highlighted path or symbol to open it · click `✕` on a tab (or middle-click it) to close it
 
 </details>
 

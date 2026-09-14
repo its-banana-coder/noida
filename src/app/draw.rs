@@ -55,6 +55,7 @@ impl App {
             agents: [inner(agent_blocks[0]), inner(agent_blocks[1])],
             doc_tabs: Vec::new(),
             agent_tabs: [Vec::new(), Vec::new()],
+            agent_closes: [Vec::new(), Vec::new()],
         };
 
         let mut cursor = None;
@@ -229,14 +230,17 @@ impl App {
                 let label = format!(" {} {} ", a.status_glyph(), a.name);
                 let w = label.chars().count() as u16;
                 self.rects.agent_tabs[slot].push((x, x + w, i));
-                x += w + 1;
                 let style = if i == self.slots[slot] {
                     Style::default().fg(theme::HINT_FG()).bg(theme::BORDER_FOCUS()).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(theme::DIM())
                 };
                 spans.push(Span::styled(label, style));
-                spans.push(Span::raw(" "));
+                // Close button right after the label.
+                self.rects.agent_closes[slot].push((x + w, i));
+                spans.push(Span::styled("✕", style.remove_modifier(Modifier::BOLD)));
+                spans.push(Span::raw("  "));
+                x += w + 3;
             }
             let slot_focused = self.focus == Focus::Agent && (!self.split || self.active_slot == slot);
             pane(buf, block, Line::from(spans), slot_focused);
