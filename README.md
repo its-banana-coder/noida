@@ -17,14 +17,35 @@ NOIDA doesn't reimplement Claude Code or Codex. It runs the real CLIs in a pseud
 
 ## Features
 
-- **Agent panes**: `claude`, `codex` and a shell in tabs, each in a real PTY. Tab status shows `⠙` working, `●` idle, `✓` finished in the background, `!` wants attention (bell)
-- **Clickable file references**: `src/app.rs:42`, `src/app.rs:42:7`, `app.rs#L10-20`, `src/app.rs (lines 10-20)`, `Read(src/app.rs)` `index.ts around line 120` and git-diff style `a/src/app.rs` paths are detected. Shortened paths like `index.ts:146` or `engine/src/index.ts` are matched against project files, and if several files match you get a picker. Only paths that exist get highlighted.
-- **Jump by keyboard**: `Alt+j` labels every reference on screen. Press a label to open it, or `Enter` for the newest one.
-- **File tree** that respects `.gitignore`, shows files agents create, and reveals whatever you open
-- **Editor** with syntax highlighting (the same language set as `bat`), multiple open files, undo/redo, find, go to line and mouse selection
-- **Live reload**: open files update when the agent edits them, and NOIDA warns you if you have unsaved changes
-- **Send code to the agent**: select lines and press `Alt+s` to insert `@path#L10-20` into the agent prompt, or `Alt+Shift+S` for `@path`
-- **Fuzzy file open** (`Alt+o` / `Ctrl+P`), jump history (`Alt+-`), resizable and zoomable panes
+**Agents**
+- **Real CLIs in real PTYs**: `claude`, `codex` and shells in tabs, with split panes (`Alt+v`)
+- **Sessions** (`Alt+g`): switch tabs, or resume any past Claude/Codex conversation for the project. Tabs and conversations are restored on the next launch.
+- **Exact status via hooks**: NOIDA attaches Claude Code hooks to the agents it starts (per session, your settings are untouched) and a Codex `notify` hook. Tabs show `⠙` working, `✓` finished, `!` needs permission.
+- **Permission alerts**: when an agent waits for approval, the status bar says what it wants to run
+- **Activity & timeline** (`Alt+a`): every prompt, read, edit, created file and command per turn. Past turns are kept in **Agent: History**.
+- **Handoff**: *Ask codex to review claude's changes* (and vice versa) from the command palette
+- **Worktrees**: start an agent in an isolated git worktree, review its diff, apply its changes to the project, or remove it
+
+**Agent ↔ code navigation**
+- **Clickable file references**: `src/app.rs:42`, `app.rs#L10-20`, `src/app.rs (lines 10-20)`, `index.ts around line 120`, `Read(src/app.rs)`, `a/src/app.rs`. Shortened paths are matched against project files, and if several match you get a picker.
+- **Clickable symbols**: `resolveAnimatedLayout` or `refresh_session` in agent output jumps to the definition
+- **Jump by keyboard**: `Alt+j` labels every reference on screen
+- **Send context**: `Alt+s` sends `@path#L10-20`, `Alt+S` the whole file, `Alt+e` asks the agent to explain the selection, and the palette has refactor / find bugs / write tests / optimize / review
+- **Fix with agent**: `Alt+F` sends the language-server problem at the cursor to the agent
+
+**Git**
+- Branch and change count in the status bar, `M`/`U`/`D`/`✓` markers in the tree, change bars in the editor gutter
+- **Review changes** (`Alt+r`): per-hunk **accept** (stage) or **reject** (revert on disk), per file or everything. After an agent finishes, `Alt+r` opens just the files it changed.
+- Switch branch, new branch, commit staged, all from the command palette
+
+**Code intelligence**
+- **Tree-sitter** symbols for Rust, TypeScript/TSX, JavaScript, Python, Go and Java: file outline (`Alt+l`), project symbols (`Alt+k`), structural selection (`Alt+Shift+→` / `←`)
+- **Language servers** when installed (rust-analyzer, typescript-language-server, pyright/pylsp, gopls): diagnostics in the gutter and a problems list (`Alt+i`), go to definition (`F12`, `Ctrl+click`), find references (`Shift+F12`). Without a server, definitions come from the tree-sitter index and references from a project-wide search.
+
+**Editor**
+- Syntax highlighting (the same language set as `bat`), tabs, undo/redo, find, go to line, mouse selection, back/forward (`Alt+←` / `Alt+→`)
+- Open files reload automatically when an agent edits them
+- **Command palette** (`Alt+x`) and fuzzy file open (`Alt+o` / `Ctrl+P`)
 
 ## Installation
 
@@ -97,21 +118,24 @@ noida --agent claude=claude --agent aider="aider --no-git" --agent shell=bash
 
 ## Keybindings
 
-NOIDA's global shortcuts use **Alt** so that ordinary keys still reach the agent.
+NOIDA's global shortcuts use **Alt**, so ordinary keys still reach the agent. They avoid Claude Code's own Meta bindings (`Alt+p`, `Alt+t`, `Alt+b`, `Alt+f`, `Alt+m`). **`Alt+x` opens the command palette, which lists every command with its shortcut.**
 
 | Key | Action |
 |---|---|
-| `Alt+1` / `Alt+2` / `Alt+3` | Focus files / editor / agent |
-| `Alt+0` | Toggle file tree |
-| `Alt+j` | Label file references in agent output; type a label to open (`Enter` = newest) |
-| Click a highlighted path | Open it at that line |
-| `Alt+o`, `Ctrl+P` | Fuzzy open file (type `name:120` to jump to a line) |
-| `Alt+s` | Send editor selection (or current line) to the agent as `@path#Lx-y` |
-| `Alt+Shift+S` | Send the current file to the agent as `@path` |
-| `Alt+-` | Go back to previous location |
-| `Alt+n` | Next agent tab (or click a tab) |
-| `Alt+z` | Zoom focused pane |
-| `Alt+,` / `Alt+.` | Grow / shrink agent pane (or drag the divider) |
+| `Alt+x` | Command palette |
+| `Alt+1` / `Alt+2` / `Alt+3` | Focus files / editor / agent (`Alt+0` toggles the tree) |
+| `Alt+o`, `Ctrl+P` | Open file (type `name:120` to jump to a line) |
+| `Alt+j` | Label file/symbol references in agent output; type a label (`Enter` = newest) |
+| `Alt+g` | Sessions: switch tab, new tab, resume a past conversation |
+| `Alt+n` / `Alt+v` / `Alt+w` | Next agent tab / split agent panes / other pane |
+| `Alt+s` / `Alt+S` | Send selection / current file to the agent |
+| `Alt+e` / `Alt+F` | Ask agent to explain selection / fix problem at cursor |
+| `Alt+r` | Review changes (`a` accept hunk, `x` reject, `A`/`X` whole file, `Enter` open) |
+| `Alt+a` | Agent activity and timeline |
+| `Alt+l` / `Alt+k` | Symbols in file / project |
+| `Alt+i` | Problems |
+| `Alt+-` | Go back |
+| `Alt+z` / `Alt+,` / `Alt+.` | Zoom pane / grow / shrink agent pane (or drag dividers) |
 | `Alt+q` | Quit (asks again if files are unsaved) |
 
 **Editor**
@@ -121,26 +145,32 @@ NOIDA's global shortcuts use **Alt** so that ordinary keys still reach the agent
 | `Ctrl+S` | Save |
 | `Ctrl+F`, `F3` | Find, find next |
 | `Ctrl+G` | Go to `line[:col]` |
+| `F12`, `Ctrl+click` / `Shift+F12` | Go to definition / find references |
+| `Alt+Shift+→` / `Alt+Shift+←` | Expand / shrink selection by syntax |
+| `Alt+←` / `Alt+→` | Back / forward |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+C` / `Ctrl+X` | Copy / cut (line if nothing selected) to system clipboard via OSC 52 |
 | `Ctrl+A` | Select all |
 | `Shift+arrows`, mouse drag | Select |
-| `Ctrl+←/→` | Move by word |
 | `Tab` / `Shift+Tab` | Indent / dedent |
-| `Ctrl+W` | Close file |
+| `Ctrl+W`, middle-click tab | Close file |
 | `Ctrl+PgUp` / `Ctrl+PgDn` | Previous / next open file |
 
-To paste, use your terminal's paste shortcut (e.g. `Ctrl+Shift+V`).
-
-**File tree**: `↑/↓` or `j/k` move, `Enter` opens, `←/→` collapse/expand, `r` refreshes.
+**File tree**: `↑/↓` or `j/k` move, `Enter` opens, `←/→` collapse/expand, `R` refreshes.
 
 **Agent pane**: every key goes to the agent. Mouse wheel scrolls back through output.
+
+## How agent integration works
+
+- NOIDA starts `claude` with `--settings '<hooks>'` and `--session-id <uuid>`. The hooks run `noida hook`, which forwards the event over a local Unix socket and prints nothing, so it never affects Claude's decisions or permission prompts. Your own settings and hooks still apply.
+- `codex` is started with `-c notify=[noida, hook-codex]` to report finished turns.
+- Workspace state lives in `~/.local/share/noida/workspaces/`, agent history in `~/.local/share/noida/history/`. Start with `--fresh` to skip restoring.
 
 ## Known limitations
 
 - `Shift+Enter` can't be told apart from `Enter` in most terminals. Use the agent's own newline shortcut (in Claude Code, `\` then `Enter`).
 - The Alt shortcuts above aren't passed through to the agent.
-- There's no git diff viewer, LSP or plugin support yet.
+- Language features need the language server installed (e.g. `rustup component add rust-analyzer`, `npm i -g typescript-language-server typescript`).
 
 ## Development
 
@@ -154,7 +184,12 @@ Code layout:
 | File | Purpose |
 |---|---|
 | `src/main.rs` | CLI parsing, terminal setup, event loop |
-| `src/app.rs` | Layout, focus, input routing, quick open, navigation |
+| `src/app/` | App state, input routing, commands (`mod.rs`), layout (`draw.rs`), review/activity views (`views.rs`) |
+| `src/actions.rs`, `src/picker.rs` | Command registry, fuzzy picker |
+| `src/hooks.rs`, `src/activity.rs`, `src/sessions.rs` | Agent hooks, activity/history, past session discovery |
+| `src/git.rs` | Status, diffs, hunk stage/revert, branches, worktrees |
+| `src/symbols.rs`, `src/lsp.rs` | Tree-sitter symbols, LSP client |
+| `src/workspace.rs`, `src/events.rs` | Session restore, background event bus |
 | `src/agent.rs` | PTY processes, vt100 emulation, key encoding, terminal query replies |
 | `src/refs.rs` | File reference detection in agent output |
 | `src/editor.rs` | Text buffer, editing, syntax highlighting |

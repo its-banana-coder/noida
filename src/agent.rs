@@ -1,7 +1,7 @@
 //! Agent panes: real PTYs running `claude`, `codex`, or a shell.
 
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
@@ -12,13 +12,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, Mo
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::actions::AgentKind;
+use crate::events::Bg;
 use crate::refs::FileRef;
 use crate::theme;
-
-pub enum PtyEvent {
-    Output(usize, Vec<u8>),
-    Exited(usize),
-}
 
 /// Answers terminal queries (cursor position, device attributes, colors) that
 /// TUIs like codex send on startup, and forwards clipboard writes to the host.
@@ -90,6 +87,16 @@ struct Process {
 pub struct Agent {
     pub id: usize,
     pub name: String,
+    pub command: String,
+    pub kind: Option<AgentKind>,
+    pub cwd: PathBuf,
+    /// Claude conversation id, so the tab can be resumed next launch.
+    pub session_id: Option<String>,
+    /// (worktree path, branch) for agents isolated in a git worktree.
+    pub worktree: Option<(PathBuf, String)>,
+    /// Set when hooks report working/idle precisely.
+    pub hook_working: Option<bool>,
+    started_at: Option<Instant>,
     program: String,
     args: Vec<String>,
     pub parser: vt100::Parser<Responder>,
@@ -113,11 +120,24 @@ enum Attention {
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 impl Agent {
-    pub fn new(id: usize, name: &str, command: &str) -> Self {
+    pub fn new(id: usize, name: &str, command: &str, cwd: PathBuf) -> Self {
         let mut parts = command.split_whitespace().map(String::from);
+        let program = parts.clone().next().unwrap_or_default();
+        let kind = match Path::new(&program).file_name().and_then(|n| n.to_str()) {
+            Some("claude") => Some(AgentKind::Claude),
+            Some("codex") => Some(AgentKind::Codex),
+            _ => None,
+        };
         Self {
             id,
             name: name.to_string(),
+            command: command.to_string(),
+            kind,
+            cwd,
+            session_id: None,
+            worktree: None,
+            hook_working: None,
+            started_at: None,
             program: parts.next().unwrap_or_default(),
             args: parts.collect(),
             parser: vt100::Parser::new_with_callbacks(24, 80, 10_000, Responder::default()),
@@ -140,21 +160,42 @@ impl Agent {
         self.proc.is_some() || self.error.is_some()
     }
 
-    pub fn start(&mut self, cwd: &Path, tx: Sender<PtyEvent>) {
+    /// Start the process with extra arguments (hooks, session flags) and environment.
+    pub fn start(&mut self, tx: Sender<Bg>, extra_args: &[String], env: &[(String, String)]) {
         self.error = None;
-        if let Err(e) = self.try_start(cwd, tx) {
+        if let Err(e) = self.try_start(tx, extra_args, env) {
             self.error = Some(format!("{e:#}"));
         }
     }
 
-    fn try_start(&mut self, cwd: &Path, tx: Sender<PtyEvent>) -> Result<()> {
+    /// Exited within a few seconds of starting (e.g. a failed `--resume`).
+    pub fn died_quickly(&self) -> bool {
+        self.exited && self.started_at.is_some_and(|t| t.elapsed() < Duration::from_secs(5))
+    }
+
+    /// Forget the finished process so the tab can be started again.
+    pub fn reset(&mut self) {
+        self.proc = None;
+        self.error = None;
+        self.exited = false;
+    }
+
+    pub fn alert(&mut self) {
+        self.attention = Some(Attention::Bell);
+    }
+
+    fn try_start(&mut self, tx: Sender<Bg>, extra_args: &[String], env: &[(String, String)]) -> Result<()> {
         let (rows, cols) = self.size;
         let pair = native_pty_system()
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .context("failed to open pty")?;
         let mut cmd = CommandBuilder::new(&self.program);
         cmd.args(&self.args);
-        cmd.cwd(cwd);
+        cmd.args(extra_args);
+        cmd.cwd(&self.cwd);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         let child = pair
@@ -171,17 +212,18 @@ impl Agent {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        if tx.send(PtyEvent::Output(id, buf[..n].to_vec())).is_err() {
+                        if tx.send(Bg::PtyOutput(id, buf[..n].to_vec())).is_err() {
                             return;
                         }
                     }
                 }
             }
-            let _ = tx.send(PtyEvent::Exited(id));
+            let _ = tx.send(Bg::PtyExit(id));
         });
         self.parser = vt100::Parser::new_with_callbacks(rows, cols, 10_000, Responder::default());
         self.proc = Some(Process { master: pair.master, writer, child });
         self.exited = false;
+        self.started_at = Some(Instant::now());
         Ok(())
     }
 
@@ -211,10 +253,10 @@ impl Agent {
     pub fn update_status(&mut self, visible: bool) -> bool {
         // Output right after a keystroke is just echo, not the agent working.
         let working = self.running()
-            && self.last_output.is_some_and(|out| {
+            && self.hook_working.unwrap_or_else(|| self.last_output.is_some_and(|out| {
                 out.elapsed() < Duration::from_millis(1500)
                     && self.last_input.is_none_or(|inp| out.saturating_duration_since(inp) > Duration::from_millis(700))
-            });
+            }));
         let changed = working != self.working;
         if self.working && !working && !visible && self.attention.is_none() {
             self.attention = Some(Attention::Finished);
@@ -282,10 +324,6 @@ impl Agent {
 
     pub fn send_key(&mut self, key: KeyEvent) {
         if self.exited || self.error.is_some() {
-            if key.code == KeyCode::Enter {
-                self.proc = None;
-                self.error = None;
-            }
             return;
         }
         self.parser.screen_mut().set_scrollback(0);
@@ -343,7 +381,8 @@ impl Agent {
         true
     }
 
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer, focused: bool, refs: &[FileRef], hover: Option<(u16, u16)>, hints: bool) -> Option<(u16, u16)> {
+    /// `hints` carries (label offset, total refs across panes) while jump labels show.
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, focused: bool, refs: &[FileRef], hover: Option<(u16, u16)>, hints: Option<(usize, usize)>) -> Option<(u16, u16)> {
         self.resize(area.height, area.width);
         if let Some(err) = &self.error {
             buf.set_stringn(area.x, area.y, err, area.width as usize, Style::default().fg(theme::ERROR));
@@ -383,9 +422,9 @@ impl Agent {
                     buf[(area.x + col, area.y + row)].set_style(style);
                 }
             }
-            if hints {
+            if let Some((base, total)) = hints {
                 if let Some(&(row, s, _)) = r.segments.first() {
-                    let label = hint_label(i, refs.len());
+                    let label = hint_label(base + i, total);
                     buf.set_string(area.x + s, area.y + row, label, Style::default().fg(theme::HINT_FG).bg(theme::HINT_BG).add_modifier(Modifier::BOLD));
                 }
             }

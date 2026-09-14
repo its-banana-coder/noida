@@ -2,12 +2,15 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use ignore::WalkBuilder;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::activity::Touch;
+use crate::git::FileState;
 use crate::theme;
 
 #[derive(Clone)]
@@ -37,6 +40,8 @@ pub struct Tree {
     pub selected: usize,
     pub offset: usize,
     height: usize,
+    git: HashMap<PathBuf, FileState>,
+    dirty_dirs: HashSet<PathBuf>,
 }
 
 impl Tree {
@@ -49,6 +54,8 @@ impl Tree {
             selected: 0,
             offset: 0,
             height: 20,
+            git: HashMap::new(),
+            dirty_dirs: HashSet::new(),
         };
         t.rebuild();
         t
@@ -106,6 +113,57 @@ impl Tree {
                 self.push_children(&e.path, depth + 1, rows);
             }
         }
+    }
+
+    pub fn set_git(&mut self, files: &HashMap<PathBuf, FileState>) {
+        self.git = files.clone();
+        self.dirty_dirs.clear();
+        for (path, state) in files {
+            if *state == FileState::Staged {
+                continue;
+            }
+            let mut p = path.parent();
+            while let Some(dir) = p {
+                if !dir.starts_with(&self.root) || !self.dirty_dirs.insert(dir.to_path_buf()) {
+                    break;
+                }
+                p = dir.parent();
+            }
+        }
+    }
+
+    pub fn selected_path(&self) -> Option<&Path> {
+        self.rows.get(self.selected).map(|r| r.path.as_path())
+    }
+
+    /// Directory to create new entries in: the selection if it is a folder, else its parent.
+    pub fn target_dir(&self) -> PathBuf {
+        match self.rows.get(self.selected) {
+            Some(r) if r.is_dir => r.path.clone(),
+            Some(r) => r.path.parent().map_or(self.root.clone(), Path::to_path_buf),
+            None => self.root.clone(),
+        }
+    }
+
+    pub fn expanded_rel(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .expanded
+            .iter()
+            .filter(|p| **p != self.root)
+            .filter_map(|p| p.strip_prefix(&self.root).ok().map(|r| r.to_string_lossy().into_owned()))
+            .collect();
+        v.sort();
+        v
+    }
+
+    pub fn expand_rel(&mut self, dirs: &[String]) {
+        for d in dirs {
+            let p = self.root.join(d);
+            if p.is_dir() {
+                self.expanded.insert(p);
+            }
+        }
+        self.rebuild();
     }
 
     /// Re-read directories from disk (agents create and delete files).
@@ -199,7 +257,7 @@ impl Tree {
         (i < self.rows.len()).then_some(i)
     }
 
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer, focused: bool, open: Option<&Path>) {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, focused: bool, open: Option<&Path>, touched: &HashMap<PathBuf, (Touch, Instant)>) {
         self.height = area.height as usize;
         if self.selected < self.offset {
             self.offset = self.selected;
@@ -221,8 +279,47 @@ impl Tree {
                 (true, false) => "▸ ",
                 _ => "  ",
             };
+            let git = self.git.get(&row.path).copied();
+            let dirty_dir = row.is_dir && self.dirty_dirs.contains(&row.path);
+            if let Some(g) = git {
+                if !row.is_dir && Some(row.path.as_path()) != open && i != self.selected {
+                    style = style.fg(match g {
+                        FileState::Untracked => theme::ADDED,
+                        FileState::Deleted | FileState::Conflict => theme::ERROR,
+                        FileState::Modified => theme::ACCENT,
+                        FileState::Staged => theme::FG,
+                    });
+                }
+            }
+            let (agent_mark, agent_color) = match touched.get(&row.path) {
+                Some((Touch::Reading, t)) if t.elapsed() < Duration::from_secs(8) => ("●", theme::LINK),
+                Some((Touch::Edited, t)) if t.elapsed() < Duration::from_secs(8) => ("●", theme::ACCENT),
+                Some((Touch::Edited, _)) => ("◆", theme::BORDER_FOCUS),
+                _ => ("", theme::DIM),
+            };
+            let right = match (git, dirty_dir) {
+                (Some(g), _) => g.glyph(),
+                (None, true) => "•",
+                _ => "",
+            };
+            let right_w = (right.chars().count() + if agent_mark.is_empty() { 0 } else { 2 }) as u16;
             let line = format!("{}{}{}", "  ".repeat(row.depth), icon, row.name);
-            buf.set_stringn(area.x, y, line, area.width as usize, style);
+            buf.set_stringn(area.x, y, line, area.width.saturating_sub(right_w + 1) as usize, style);
+            let mut x = area.x + area.width.saturating_sub(right_w);
+            if !agent_mark.is_empty() && right_w < area.width {
+                buf.set_string(x, y, agent_mark, style.fg(agent_color));
+                x += 2;
+            }
+            if !right.is_empty() && right_w < area.width {
+                let color = match git {
+                    Some(FileState::Untracked) => theme::ADDED,
+                    Some(FileState::Deleted | FileState::Conflict) => theme::ERROR,
+                    Some(FileState::Staged) => theme::ADDED,
+                    Some(FileState::Modified) => theme::ACCENT,
+                    None => theme::DIM,
+                };
+                buf.set_string(x, y, right, style.fg(color));
+            }
         }
         if self.rows.is_empty() {
             buf.set_string(area.x, area.y, "(empty)", Style::default().fg(Color::DarkGray));

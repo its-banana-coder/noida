@@ -8,6 +8,10 @@ use std::time::{Duration, Instant};
 use ignore::WalkBuilder;
 use regex::Regex;
 
+use crate::symbols::{ProjectSymbols, looks_like_code};
+
+static IDENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z_][A-Za-z0-9_]{3,}").unwrap());
+
 static REF_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?x)
@@ -31,6 +35,8 @@ pub struct FileRef {
     pub col: Option<usize>,
     /// Set when a partial path (e.g. `index.ts`) matched several files.
     pub ambiguous: Option<String>,
+    /// Set when this is a code symbol linked to its definition.
+    pub symbol: Option<String>,
     /// Screen segments covered by the reference: (row, start_col, end_col exclusive).
     pub segments: Vec<(u16, u16, u16)>,
 }
@@ -171,7 +177,7 @@ impl Resolver {
 }
 
 /// Scan the visible screen of a vt100 terminal for file references.
-pub fn scan_screen(screen: &vt100::Screen, resolver: &mut Resolver) -> Vec<FileRef> {
+pub fn scan_screen(screen: &vt100::Screen, resolver: &mut Resolver, symbols: Option<&ProjectSymbols>) -> Vec<FileRef> {
     let (rows, cols) = screen.size();
     let mut refs = Vec::new();
     let mut text = String::new();
@@ -191,7 +197,7 @@ pub fn scan_screen(screen: &vt100::Screen, resolver: &mut Resolver) -> Vec<FileR
         }
         // Logical lines continue across soft-wrapped rows.
         if !screen.row_wrapped(row) || row + 1 == rows {
-            scan_line(&text, &pos, resolver, &mut refs);
+            scan_line(&text, &pos, resolver, symbols, &mut refs);
             text.clear();
             pos.clear();
         }
@@ -203,8 +209,10 @@ fn scan_line(
     text: &str,
     pos: &[(u16, u16)],
     resolver: &mut Resolver,
+    symbols: Option<&ProjectSymbols>,
     out: &mut Vec<FileRef>,
 ) {
+    let mut taken: Vec<(usize, usize)> = Vec::new();
     for caps in REF_RE.captures_iter(text) {
         let path_m = caps.name("path").unwrap();
         let Some(resolved) = resolver.resolve(path_m.as_str()) else { continue };
@@ -216,15 +224,37 @@ fn scan_line(
         } else {
             path_m.end()
         };
+        taken.push((path_m.start(), end));
         out.push(FileRef {
             path: resolved.path,
             ambiguous: resolved.ambiguous.then(|| path_m.as_str().to_string()),
+            symbol: None,
             line: num("l1").or(num("l2")),
             end_line: num("e1").or(num("e2")),
             col: num("c1"),
             segments: segments(pos, path_m.start(), end),
         });
     }
+    let Some(symbols) = symbols else { return };
+    for m in IDENT_RE.find_iter(text) {
+        let name = m.as_str();
+        if taken.iter().any(|&(s, e)| m.start() < e && m.end() > s) || !looks_like_code(name) {
+            continue;
+        }
+        let defs = symbols.definitions(name);
+        let Some((path, sym)) = defs.first() else { continue };
+        out.push(FileRef {
+            path: path.clone(),
+            line: Some(sym.line + 1),
+            end_line: None,
+            col: Some(sym.col + 1),
+            ambiguous: (defs.len() > 1).then(|| name.to_string()),
+            symbol: Some(name.to_string()),
+            segments: segments(pos, m.start(), m.end()),
+        });
+    }
+    // Keep screen order so hint labels read top-to-bottom.
+    out.sort_by_key(|r| r.segments.first().map(|&(row, col, _)| (row, col)));
 }
 
 fn segments(pos: &[(u16, u16)], start: usize, end: usize) -> Vec<(u16, u16, u16)> {
@@ -264,14 +294,14 @@ mod tests {
         parser.process(text.as_bytes());
         let mut r = Resolver::new(root.to_path_buf());
         r.set_index(Arc::new(FileIndex::build(root)));
-        scan_screen(parser.screen(), &mut r)
+        scan_screen(parser.screen(), &mut r, None)
     }
 
     #[test]
     fn finds_refs() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let refs = scan(
-            "See src/main.rs:12:4 and `Cargo.toml`.\r\n● Read(src/refs.rs)\r\nsrc/app.rs (lines 10-20) nope.rs:3",
+            "See src/main.rs:12:4 and `Cargo.toml`.\r\n● Read(src/refs.rs)\r\nsrc/tree.rs (lines 10-20) nope.rs:3",
             root,
         );
         let got: Vec<_> = refs
@@ -284,7 +314,7 @@ mod tests {
                 ("src/main.rs".into(), Some(12), Some(4), None),
                 ("Cargo.toml".into(), None, None, None),
                 ("src/refs.rs".into(), None, None, None),
-                ("src/app.rs".into(), Some(10), None, Some(20)),
+                ("src/tree.rs".into(), Some(10), None, Some(20)),
             ]
         );
         assert_eq!(refs[0].segments, vec![(0, 4, 20)]);
@@ -310,12 +340,26 @@ mod tests {
     }
 
     #[test]
+    fn symbol_links() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let files = vec!["src/refs.rs".to_string()];
+        let symbols = ProjectSymbols::build(root, &files);
+        let mut parser = vt100::Parser::new(3, 80, 0);
+        parser.process(b"`scan_screen` calls split_line_suffix; render is common");
+        let mut r = Resolver::new(root.to_path_buf());
+        let refs = scan_screen(parser.screen(), &mut r, Some(&symbols));
+        let names: Vec<_> = refs.iter().filter_map(|r| r.symbol.clone()).collect();
+        assert_eq!(names, vec!["scan_screen", "split_line_suffix"]);
+        assert!(refs[0].line.is_some() && refs[0].path.ends_with("src/refs.rs"));
+    }
+
+    #[test]
     fn wrapped_ref() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut parser = vt100::Parser::new(5, 10, 0);
         parser.process(b"xxxxx src/main.rs:7");
         let mut r = Resolver::new(root.to_path_buf());
-        let refs = scan_screen(parser.screen(), &mut r);
+        let refs = scan_screen(parser.screen(), &mut r, None);
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].line, Some(7));
         assert_eq!(refs[0].segments, vec![(0, 6, 10), (1, 0, 9)]);

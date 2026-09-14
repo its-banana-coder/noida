@@ -1,9 +1,19 @@
+mod actions;
+mod activity;
 mod agent;
 mod app;
 mod editor;
+mod events;
+mod git;
+mod hooks;
+mod lsp;
+mod picker;
 mod refs;
+mod sessions;
+mod symbols;
 mod theme;
 mod tree;
+mod workspace;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -18,35 +28,48 @@ const HELP: &str = "\
 NOIDA — Navigation-Oriented IDE for Developer Agents
 
 USAGE:
-    noida [PATH[:LINE]] [--agent NAME=COMMAND]...
+    noida [PATH[:LINE]] [--agent NAME=COMMAND]... [--fresh]
 
     PATH      project directory (default: current dir), or a file to open
     --agent   agent tab to run, e.g. --agent claude=claude --agent aider=\"aider --no-git\"
-              (default: claude and codex if installed, plus a shell)
+              (default: restore last session's tabs, else claude + codex + shell)
+    --fresh   don't restore open files, layout and agent sessions
 
-KEYS:
+KEYS (Alt+x opens the command palette with everything):
     Alt+1/2/3   focus files / editor / agent     Alt+0   toggle file tree
     Alt+j       jump to a file ref shown by the agent (label, Enter = newest)
-    click       a highlighted path in the agent pane opens it at that line
+    click       a highlighted path or symbol in agent output opens it
     Alt+o       open file (fuzzy), also Ctrl+P outside the agent pane
-    Alt+s       send selection as @path#Lx-y to the agent
-    Alt+S       send current file as @path to the agent
-    Alt+n       next agent tab                   Alt+z   zoom pane
-    Alt+, Alt+. resize agent pane (or drag divider)
-    Alt+-       go back to previous location     Alt+q   quit
-    Editor:     Ctrl+S save, Ctrl+F find (F3 next), Ctrl+G go to line,
-                Ctrl+Z/Y undo/redo, Ctrl+C/X copy/cut, Ctrl+W close,
-                Ctrl+PgUp/PgDn switch file
+    Alt+s / S   send selection / file to the agent   Alt+e  ask agent to explain
+    Alt+g       sessions: switch tabs or resume past Claude/Codex conversations
+    Alt+n       next agent tab       Alt+v split agents     Alt+w other pane
+    Alt+r       review changes (a accept hunk, x reject)    Alt+a agent activity
+    Alt+l / k   symbols in file / project    F12 definition  Shift+F12 references
+    Alt+i       problems             Alt+F  ask agent to fix the problem at cursor
+    Alt+, Alt+. resize agent pane    Alt+z zoom    Alt+- back    Alt+q quit
 ";
 
-fn on_path(program: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
-}
-
 fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1).peekable();
+    match args.peek().map(String::as_str) {
+        // Hook clients spawned by agents: forward the event and exit silently.
+        Some("hook") => {
+            let mut payload = String::new();
+            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload);
+            hooks::forward("claude", &payload);
+            return Ok(());
+        }
+        Some("hook-codex") => {
+            let payload = std::env::args().nth(2).unwrap_or_default();
+            hooks::forward("codex", &payload);
+            return Ok(());
+        }
+        _ => {}
+    }
+
     let mut target: Option<String> = None;
     let mut agents: Vec<(String, String)> = Vec::new();
-    let mut args = std::env::args().skip(1);
+    let mut restore = true;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -57,6 +80,7 @@ fn main() -> Result<()> {
                 println!("noida {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
+            "--fresh" => restore = false,
             "--agent" => {
                 let spec = args.next().context("--agent needs NAME=COMMAND")?;
                 let (name, cmd) = spec.split_once('=').unwrap_or((&spec, &spec));
@@ -65,15 +89,6 @@ fn main() -> Result<()> {
             a if a.starts_with('-') => bail!("unknown option {a}\n\n{HELP}"),
             a => target = Some(a.to_string()),
         }
-    }
-    if agents.is_empty() {
-        for name in ["claude", "codex"] {
-            if on_path(name) {
-                agents.push((name.to_string(), name.to_string()));
-            }
-        }
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".into());
-        agents.push(("shell".into(), shell));
     }
 
     let (path, line) = match &target {
@@ -89,6 +104,8 @@ fn main() -> Result<()> {
     } else {
         (path, None)
     };
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("noida"));
+    let opts = app::Options { root, agents: (!agents.is_empty()).then_some(agents), restore, exe };
 
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -98,27 +115,21 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
-    let result = run(&mut terminal, root, agents, open, line);
+    let result = run(&mut terminal, opts, open, line);
     let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
     result
 }
 
-fn run(
-    terminal: &mut ratatui::DefaultTerminal,
-    root: PathBuf,
-    agents: Vec<(String, String)>,
-    open: Option<PathBuf>,
-    line: Option<usize>,
-) -> Result<()> {
+fn run(terminal: &mut ratatui::DefaultTerminal, opts: app::Options, open: Option<PathBuf>, line: Option<usize>) -> Result<()> {
     let (tx, rx) = mpsc::channel();
-    let mut app = app::App::new(root, agents, tx);
+    let mut app = app::App::new(opts, tx);
     if let Some(p) = open {
         app.open_path(&p, line);
     }
-    // Draw once so the agent PTY starts at the real pane size.
+    // Draw once so agent PTYs start at the real pane size.
     terminal.draw(|f| app.draw(f))?;
-    app.ensure_agent_started();
+    app.start_visible_agents();
 
     let mut dirty = true;
     loop {
@@ -143,11 +154,12 @@ fn run(
             dirty = true;
         }
         while let Ok(ev) = rx.try_recv() {
-            app.on_pty(ev);
+            app.on_bg(ev);
             dirty = true;
         }
         dirty |= app.tick();
         if app.quit {
+            app.save_workspace();
             return Ok(());
         }
     }

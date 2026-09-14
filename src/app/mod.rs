@@ -1,0 +1,1912 @@
+//! Top-level application state, input routing and command dispatch.
+
+mod draw;
+mod views;
+
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
+
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
+
+use crate::actions::{Action, AgentKind, Ask};
+use crate::activity::{Activity, Notice, Turn};
+use crate::agent::{Agent, HINT_KEYS, hint_label};
+use crate::editor::{Doc, KeyResult, Syntax};
+use crate::events::Bg;
+use crate::git::{self, Repo};
+use crate::hooks::{self, AgentEvent};
+use crate::lsp::{self, Lsp, Request, Response};
+use crate::picker::{Item, Kind, Outcome, Picker, Target};
+use crate::refs::{self, FileIndex, FileRef, Resolver};
+use crate::sessions;
+use crate::symbols::{self, ProjectSymbols};
+use crate::tree::{Activate, Tree};
+use crate::workspace::{self, AgentState, DocState, Workspace};
+
+use views::{ActivityView, ReviewView, ViewResult};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Tree,
+    Editor,
+    Agent,
+}
+
+enum Mode {
+    Normal,
+    Hints { typed: String },
+    Picker(Picker),
+    Prompt { kind: PromptKind, input: String },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PromptKind {
+    GotoLine,
+    Find,
+    NewBranch,
+    Commit,
+    WorktreeName(AgentKind),
+}
+
+enum View {
+    Review(ReviewView),
+    Activity(ActivityView),
+}
+
+#[derive(PartialEq)]
+enum Drag {
+    None,
+    Editor,
+    AgentDivider,
+    TreeDivider,
+    SplitDivider,
+}
+
+struct Banner {
+    text: String,
+    error: bool,
+    at: Instant,
+    changed: Vec<String>,
+}
+
+#[derive(Default)]
+struct Rects {
+    main: Rect,
+    tree_block: Rect,
+    tree: Rect,
+    editor_block: Rect,
+    editor: Rect,
+    agent_area: Rect,
+    agent_blocks: [Rect; 2],
+    agents: [Rect; 2],
+    doc_tabs: Vec<(u16, u16, usize)>,
+    agent_tabs: [Vec<(u16, u16, usize)>; 2],
+}
+
+type Loc = (PathBuf, usize, usize);
+
+pub struct Options {
+    pub root: PathBuf,
+    pub agents: Option<Vec<(String, String)>>,
+    pub restore: bool,
+    pub exe: PathBuf,
+}
+
+pub struct App {
+    root: PathBuf,
+    exe: PathBuf,
+    syntax: Syntax,
+    tree: Tree,
+    docs: Vec<Doc>,
+    active_doc: usize,
+    agents: Vec<Agent>,
+    next_agent_id: usize,
+    slots: [usize; 2],
+    split: bool,
+    split_pct: u16,
+    active_slot: usize,
+    focus: Focus,
+    mode: Mode,
+    view: Option<View>,
+    show_tree: bool,
+    zoom: bool,
+    tree_width: u16,
+    agent_pct: u16,
+    rects: Rects,
+    resolvers: HashMap<PathBuf, Resolver>,
+    refs: [Vec<FileRef>; 2],
+    hover: Option<(usize, u16, u16)>,
+    drag: Drag,
+    message: Option<(String, Instant, bool)>,
+    banner: Option<Banner>,
+    back: Vec<Loc>,
+    forward: Vec<Loc>,
+    last_find: String,
+    tx: Sender<Bg>,
+    file_index: Arc<FileIndex>,
+    index_built: Option<Instant>,
+    index_building: bool,
+    symbols: Arc<ProjectSymbols>,
+    symbols_built: Option<Instant>,
+    symbols_building: bool,
+    repo: Option<Repo>,
+    git: git::Status,
+    git_building: bool,
+    last_git: Instant,
+    activity: Activity,
+    last_tool: HashMap<usize, String>,
+    history: Vec<Turn>,
+    lsp: Lsp,
+    lsp_synced: HashMap<PathBuf, u64>,
+    pending_definition: Option<String>,
+    hook_server: Option<hooks::Server>,
+    resuming: HashSet<usize>,
+    confirm: Option<(String, Instant)>,
+    last_disk_check: Instant,
+    last_tree_refresh: Instant,
+    last_workspace_save: Instant,
+    pub quit: bool,
+    pub host_out: Vec<u8>,
+}
+
+fn has_flag(command: &str, flags: &[&str]) -> bool {
+    command.split_whitespace().any(|w| flags.contains(&w))
+}
+
+impl App {
+    pub fn new(opts: Options, tx: Sender<Bg>) -> Self {
+        let root = opts.root;
+        let saved = if opts.restore { workspace::load(&root) } else { None };
+        let hook_server = hooks::Server::start(tx.clone()).ok();
+        let mut app = Self {
+            exe: opts.exe,
+            syntax: Syntax::load(),
+            tree: Tree::new(root.clone()),
+            docs: Vec::new(),
+            active_doc: 0,
+            agents: Vec::new(),
+            next_agent_id: 0,
+            slots: [0, 0],
+            split: false,
+            split_pct: 50,
+            active_slot: 0,
+            focus: Focus::Agent,
+            mode: Mode::Normal,
+            view: None,
+            show_tree: true,
+            zoom: false,
+            tree_width: 30,
+            agent_pct: 45,
+            rects: Rects::default(),
+            resolvers: HashMap::new(),
+            refs: [Vec::new(), Vec::new()],
+            hover: None,
+            drag: Drag::None,
+            message: None,
+            banner: None,
+            back: Vec::new(),
+            forward: Vec::new(),
+            last_find: String::new(),
+            file_index: Arc::default(),
+            index_built: None,
+            index_building: false,
+            symbols: Arc::default(),
+            symbols_built: None,
+            symbols_building: false,
+            repo: Repo::discover(&root),
+            git: git::Status::default(),
+            git_building: false,
+            last_git: Instant::now() - Duration::from_secs(10),
+            activity: Activity::new(root.clone()),
+            last_tool: HashMap::new(),
+            history: Vec::new(),
+            lsp: Lsp::new(root.clone(), tx.clone()),
+            lsp_synced: HashMap::new(),
+            pending_definition: None,
+            hook_server,
+            resuming: HashSet::new(),
+            confirm: None,
+            last_disk_check: Instant::now(),
+            last_tree_refresh: Instant::now(),
+            last_workspace_save: Instant::now(),
+            quit: false,
+            host_out: Vec::new(),
+            tx,
+            root,
+        };
+        app.rebuild_index();
+
+        let agent_specs = opts.agents.is_some();
+        if let Some(specs) = opts.agents {
+            for (name, cmd) in specs {
+                let root = app.root.clone();
+                app.push_agent(&name, &cmd, root);
+            }
+        }
+        if let Some(ws) = saved {
+            app.apply_workspace(ws, !agent_specs);
+        }
+        if app.agents.is_empty() {
+            for name in ["claude", "codex"] {
+                if on_path(name) {
+                    let root = app.root.clone();
+                    app.push_agent(name, name, root);
+                }
+            }
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "bash".into());
+            let root = app.root.clone();
+            app.push_agent("shell", &shell, root);
+        }
+        app
+    }
+
+    // ---- workspace ----
+
+    fn apply_workspace(&mut self, ws: Workspace, with_agents: bool) {
+        self.show_tree = ws.show_tree;
+        self.tree_width = ws.tree_width.clamp(12, 80);
+        self.agent_pct = ws.agent_pct.clamp(15, 85);
+        self.split_pct = ws.split_pct.unwrap_or(50).clamp(15, 85);
+        self.tree.expand_rel(&ws.expanded);
+        for d in &ws.docs {
+            let path = self.root.join(&d.path);
+            if path.is_file() {
+                self.open_location(&path, Some(d.line), Some(d.col), None);
+            }
+        }
+        self.active_doc = ws.active_doc.min(self.docs.len().saturating_sub(1));
+        self.back.clear();
+        self.message = None;
+        if with_agents {
+            for a in ws.agents {
+                let cwd = a.cwd.map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(|| self.root.clone());
+                let idx = self.push_agent(&a.name, &a.command, cwd.clone());
+                self.agents[idx].session_id = a.session_id;
+                if let Some(branch) = a.worktree_branch {
+                    self.agents[idx].worktree = Some((cwd, branch));
+                }
+            }
+            let n = self.agents.len();
+            if n > 0 {
+                self.slots = [ws.slots[0].min(n - 1), ws.slots[1].min(n - 1)];
+                self.split = ws.split && n > 1 && self.slots[0] != self.slots[1];
+            }
+        }
+    }
+
+    fn workspace(&self) -> Workspace {
+        Workspace {
+            docs: self
+                .docs
+                .iter()
+                .filter(|d| d.path.starts_with(&self.root))
+                .map(|d| DocState { path: refs::relative(&self.root, &d.path).into_owned(), line: d.cursor_line(), col: d.cursor_col() })
+                .collect(),
+            active_doc: self.active_doc,
+            show_tree: self.show_tree,
+            tree_width: self.tree_width,
+            agent_pct: self.agent_pct,
+            split: self.split,
+            split_pct: Some(self.split_pct),
+            agents: self
+                .agents
+                .iter()
+                .map(|a| AgentState {
+                    name: a.name.clone(),
+                    command: a.command.clone(),
+                    cwd: (a.cwd != self.root).then(|| a.cwd.to_string_lossy().into_owned()),
+                    session_id: a.session_id.clone(),
+                    worktree_branch: a.worktree.as_ref().map(|(_, b)| b.clone()),
+                })
+                .collect(),
+            slots: self.slots,
+            expanded: self.tree.expanded_rel(),
+        }
+    }
+
+    pub fn save_workspace(&self) {
+        workspace::save(&self.root, &self.workspace());
+    }
+
+    // ---- helpers ----
+
+    fn info(&mut self, msg: impl Into<String>) {
+        self.message = Some((msg.into(), Instant::now(), false));
+    }
+
+    fn error(&mut self, msg: impl Into<String>) {
+        self.message = Some((msg.into(), Instant::now(), true));
+    }
+
+    fn confirmed(&mut self, key: &str) -> bool {
+        let ok = self.confirm.as_ref().is_some_and(|(k, t)| k == key && t.elapsed() < Duration::from_secs(3));
+        self.confirm = if ok { None } else { Some((key.to_string(), Instant::now())) };
+        ok
+    }
+
+    fn active_agent(&self) -> usize {
+        self.slots[if self.split { self.active_slot } else { 0 }]
+    }
+
+    fn agent(&mut self) -> Option<&mut Agent> {
+        let i = self.active_agent();
+        self.agents.get_mut(i)
+    }
+
+    fn doc(&self) -> Option<&Doc> {
+        self.docs.get(self.active_doc)
+    }
+
+    fn push_agent(&mut self, name: &str, command: &str, cwd: PathBuf) -> usize {
+        let id = self.next_agent_id;
+        self.next_agent_id += 1;
+        self.agents.push(Agent::new(id, name, command, cwd));
+        self.agents.len() - 1
+    }
+
+    fn unique_name(&self, base: &str) -> String {
+        if !self.agents.iter().any(|a| a.name == base) {
+            return base.to_string();
+        }
+        (2..).map(|n| format!("{base}-{n}")).find(|n| !self.agents.iter().any(|a| &a.name == n)).unwrap()
+    }
+
+    fn start_agent(&mut self, idx: usize) {
+        let Some(a) = self.agents.get(idx) else { return };
+        let mut args: Vec<String> = Vec::new();
+        let mut env = vec![(hooks::ENV_AGENT.to_string(), a.id.to_string())];
+        if let Some(server) = &self.hook_server {
+            env.push((hooks::ENV_SOCKET.to_string(), server.path.to_string_lossy().into_owned()));
+        }
+        let hooked = self.hook_server.is_some();
+        let mut resume = false;
+        let mut new_session = None;
+        match a.kind {
+            Some(AgentKind::Claude) => {
+                if hooked {
+                    args.extend(["--settings".to_string(), hooks::claude_settings(&self.exe)]);
+                }
+                if !has_flag(&a.command, &["--resume", "-r", "--continue", "-c", "--session-id"]) {
+                    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+                    let transcript = a.session_id.as_ref().map(|id| sessions::claude_project_dir(&home, &a.cwd).join(format!("{id}.jsonl")));
+                    match (&a.session_id, transcript) {
+                        (Some(id), Some(t)) if t.exists() => {
+                            args.extend(["--resume".to_string(), id.clone()]);
+                            resume = true;
+                        }
+                        _ => {
+                            let id = workspace::uuid_v4();
+                            args.extend(["--session-id".to_string(), id.clone()]);
+                            new_session = Some(id);
+                        }
+                    }
+                }
+            }
+            Some(AgentKind::Codex) if hooked => args.extend(["-c".to_string(), hooks::codex_notify(&self.exe)]),
+            _ => {}
+        }
+        let tx = self.tx.clone();
+        let a = &mut self.agents[idx];
+        if let Some(id) = new_session {
+            a.session_id = Some(id);
+        }
+        if a.kind == Some(AgentKind::Claude) && hooked {
+            a.hook_working = Some(false);
+        }
+        a.start(tx, &args, &env);
+        if resume {
+            self.resuming.insert(a.id);
+        }
+    }
+
+    pub fn ensure_agent_started(&mut self) {
+        let idx = self.active_agent();
+        if self.agents.get(idx).is_some_and(|a| !a.started()) {
+            self.start_agent(idx);
+        }
+    }
+
+    pub fn start_visible_agents(&mut self) {
+        self.ensure_agent_started();
+        if self.split {
+            let other = self.slots[1];
+            if self.agents.get(other).is_some_and(|a| !a.started()) {
+                self.start_agent(other);
+            }
+        }
+    }
+
+    fn resolver(&mut self, root: &Path) -> &mut Resolver {
+        if !self.resolvers.contains_key(root) {
+            let mut r = Resolver::new(root.to_path_buf());
+            if root == self.root {
+                r.set_index(self.file_index.clone());
+            }
+            self.resolvers.insert(root.to_path_buf(), r);
+        }
+        self.resolvers.get_mut(root).unwrap()
+    }
+
+    // ---- background work ----
+
+    fn rebuild_index(&mut self) {
+        if self.index_building {
+            return;
+        }
+        self.index_building = true;
+        let tx = self.tx.clone();
+        let root = self.root.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Bg::Index(FileIndex::build(&root)));
+        });
+    }
+
+    fn rebuild_symbols(&mut self) {
+        if self.symbols_building || self.file_index.files.is_empty() {
+            return;
+        }
+        self.symbols_building = true;
+        let tx = self.tx.clone();
+        let root = self.root.clone();
+        let files = self.file_index.files.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Bg::Symbols(ProjectSymbols::build(&root, &files)));
+        });
+    }
+
+    fn refresh_git(&mut self) {
+        let Some(repo) = self.repo.clone() else { return };
+        if self.git_building {
+            return;
+        }
+        self.git_building = true;
+        self.last_git = Instant::now();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Bg::Git(repo.status().ok()));
+        });
+    }
+
+    fn refresh_marks(&mut self) {
+        let Some(repo) = &self.repo else { return };
+        if let Some(doc) = self.docs.get_mut(self.active_doc) {
+            if doc.path.starts_with(&repo.root) {
+                doc.marks = repo.line_marks(&doc.path);
+            }
+        }
+    }
+
+    pub fn on_bg(&mut self, ev: Bg) {
+        match ev {
+            Bg::PtyOutput(id, bytes) => {
+                if let Some(a) = self.agents.iter_mut().find(|a| a.id == id) {
+                    let host = a.process(&bytes);
+                    self.host_out.extend(host);
+                }
+            }
+            Bg::PtyExit(id) => self.on_agent_exit(id),
+            Bg::Hook(id, ev) => self.on_hook(id, ev),
+            Bg::Index(index) => {
+                self.index_building = false;
+                self.index_built = Some(Instant::now());
+                self.file_index = Arc::new(index);
+                let idx = self.file_index.clone();
+                let root = self.root.clone();
+                self.resolver(&root).set_index(idx);
+                if let Mode::Picker(p) = &self.mode {
+                    if p.kind == Kind::Files {
+                        self.update_quick_open();
+                    }
+                }
+                if self.symbols_built.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+                    self.rebuild_symbols();
+                }
+            }
+            Bg::Symbols(s) => {
+                self.symbols_building = false;
+                self.symbols_built = Some(Instant::now());
+                self.symbols = Arc::new(s);
+            }
+            Bg::Git(status) => {
+                self.git_building = false;
+                if let Some(st) = status {
+                    self.tree.set_git(&st.files);
+                    self.git = st;
+                }
+                self.refresh_marks();
+            }
+            Bg::Sessions(list) => {
+                if let Mode::Picker(p) = &mut self.mode {
+                    if p.title == "Sessions" {
+                        let mut items = session_tab_items(&self.agents);
+                        items.extend(list.into_iter().map(|s| {
+                            Item::new(format!("↻ {} · {}", s.kind.name(), s.title), sessions::ago(s.modified), Target::Resume(s.kind, s.id))
+                        }));
+                        p.set_items(items);
+                    }
+                }
+            }
+            Bg::Lsp(ev) => match self.lsp.handle(ev) {
+                Response::Ready(name) => self.info(format!("{name} ready")),
+                Response::Locations(kind, locs) => self.on_locations(kind, locs),
+                Response::Diagnostics | Response::None => {}
+            },
+        }
+    }
+
+    fn on_agent_exit(&mut self, id: usize) {
+        let Some(idx) = self.agents.iter().position(|a| a.id == id) else { return };
+        self.agents[idx].on_exit();
+        // A stale session id makes `--resume` exit immediately: start fresh instead.
+        if self.resuming.remove(&id) && self.agents[idx].died_quickly() {
+            let a = &mut self.agents[idx];
+            a.session_id = None;
+            a.reset();
+            self.start_agent(idx);
+            self.info("could not resume the previous conversation; started a new one");
+        }
+    }
+
+    fn on_hook(&mut self, id: usize, ev: AgentEvent) {
+        let Some(idx) = self.agents.iter().position(|a| a.id == id) else { return };
+        self.resuming.remove(&id);
+        let name = self.agents[idx].name.clone();
+        match &ev {
+            AgentEvent::SessionStart { session_id } => self.agents[idx].session_id = Some(session_id.clone()),
+            AgentEvent::Prompt { .. } => {
+                if self.agents[idx].hook_working.is_some() {
+                    self.agents[idx].hook_working = Some(true);
+                }
+            }
+            AgentEvent::ToolStart { tool, file, detail } => {
+                let what = detail.clone().or_else(|| file.as_ref().map(|f| refs::relative(&self.root, f).into_owned())).unwrap_or_default();
+                self.last_tool.insert(id, format!("{tool}({what})"));
+                if let Some(b) = &self.banner {
+                    if b.error {
+                        self.banner = None;
+                    }
+                }
+            }
+            AgentEvent::ToolEnd { tool, .. } => {
+                self.last_tool.remove(&id);
+                if matches!(tool.as_str(), "Edit" | "Write" | "MultiEdit" | "NotebookEdit" | "Bash") {
+                    self.refresh_git();
+                    self.last_disk_check = Instant::now() - Duration::from_secs(1);
+                }
+            }
+            AgentEvent::Stop => {
+                if self.agents[idx].hook_working.is_some() {
+                    self.agents[idx].hook_working = Some(false);
+                }
+            }
+            AgentEvent::Notification { .. } => {}
+        }
+        match self.activity.record(id, &name, &ev) {
+            Notice::Permission(message) => {
+                self.agents[idx].alert();
+                let what = self.last_tool.get(&id).cloned().unwrap_or(message);
+                let key = if self.active_agent() == idx && self.focus == Focus::Agent { "answer in its pane" } else { "Alt+g to switch" };
+                self.banner = Some(Banner { text: format!("⚠ {name} needs permission: {what} — {key}"), error: true, at: Instant::now(), changed: Vec::new() });
+            }
+            Notice::Finished { changed } if !changed.is_empty() => {
+                self.refresh_git();
+                let n = changed.len();
+                self.banner = Some(Banner {
+                    text: format!("✓ {name} finished — changed {n} file{} — Alt+r review", if n == 1 { "" } else { "s" }),
+                    error: false,
+                    at: Instant::now(),
+                    changed,
+                });
+            }
+            Notice::Finished { .. } => {
+                if self.banner.as_ref().is_some_and(|b| b.error) {
+                    self.banner = None;
+                }
+            }
+            Notice::None => {}
+        }
+        if let Some(View::Activity(v)) = &mut self.view {
+            if v.title == "Agent Activity" {
+                v.set_turns(self.activity.turns.clone());
+            }
+        }
+    }
+
+    /// Periodic work. Returns true when a redraw is needed.
+    pub fn tick(&mut self) -> bool {
+        let mut changed = false;
+        if self.index_built.is_some_and(|t| t.elapsed() > Duration::from_secs(30)) {
+            self.index_built = None;
+            self.rebuild_index();
+        }
+        let visible: Vec<usize> = if self.split { self.slots.to_vec() } else { vec![self.slots[0]] };
+        for (i, a) in self.agents.iter_mut().enumerate() {
+            changed |= a.update_status(visible.contains(&i));
+        }
+        if self.last_disk_check.elapsed() > Duration::from_millis(500) {
+            self.last_disk_check = Instant::now();
+            for i in 0..self.docs.len() {
+                if let Some(msg) = self.docs[i].check_disk(&self.syntax) {
+                    self.info(msg);
+                    if i == self.active_doc {
+                        self.refresh_marks();
+                    }
+                    changed = true;
+                }
+            }
+        }
+        // Keep language servers in sync, debounced.
+        for doc in &self.docs {
+            let synced = self.lsp_synced.get(&doc.path).copied().unwrap_or(0);
+            if doc.edits != synced && doc.edited_at().is_none_or(|t| t.elapsed() > Duration::from_millis(300)) {
+                self.lsp.did_change(&doc.path, &doc.text());
+                self.lsp_synced.insert(doc.path.clone(), doc.edits);
+            }
+        }
+        if self.last_tree_refresh.elapsed() > Duration::from_secs(2) {
+            self.last_tree_refresh = Instant::now();
+            self.tree.refresh();
+            changed = true;
+        }
+        if self.last_git.elapsed() > Duration::from_secs(3) {
+            self.refresh_git();
+        }
+        if self.last_workspace_save.elapsed() > Duration::from_secs(15) {
+            self.last_workspace_save = Instant::now();
+            self.save_workspace();
+        }
+        if self.message.as_ref().is_some_and(|(_, t, _)| t.elapsed() > Duration::from_secs(4)) {
+            self.message = None;
+            changed = true;
+        }
+        if self.banner.as_ref().is_some_and(|b| b.at.elapsed() > Duration::from_secs(if b.error { 120 } else { 30 })) {
+            self.banner = None;
+            changed = true;
+        }
+        let touched_recent = self.activity.touched.values().any(|(_, t)| t.elapsed() < Duration::from_secs(9));
+        changed || touched_recent || self.doc().is_some_and(Doc::flash_active)
+    }
+
+    // ---- input ----
+
+    pub fn on_event(&mut self, ev: Event) {
+        match ev {
+            Event::Key(k) if k.kind != KeyEventKind::Release => self.on_key(k),
+            Event::Mouse(m) => self.on_mouse(m),
+            Event::Paste(text) => self.on_paste(&text),
+            _ => {}
+        }
+    }
+
+    fn on_paste(&mut self, text: &str) {
+        match &mut self.mode {
+            Mode::Picker(p) => {
+                p.paste(text);
+                if p.kind == Kind::Files {
+                    self.update_quick_open();
+                }
+            }
+            Mode::Prompt { input, .. } => input.push_str(text.trim()),
+            _ => match self.focus {
+                Focus::Agent => {
+                    if let Some(a) = self.agent() {
+                        a.paste(text);
+                    }
+                }
+                Focus::Editor if self.view.is_none() => {
+                    if let Some(d) = self.docs.get_mut(self.active_doc) {
+                        d.insert_text(text);
+                    }
+                }
+                _ => {}
+            },
+        }
+    }
+
+    fn on_key(&mut self, key: KeyEvent) {
+        if !matches!(self.mode, Mode::Normal) {
+            return self.on_mode_key(key);
+        }
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if alt && !ctrl {
+            if let KeyCode::Char(c) = key.code {
+                match c {
+                    ',' => return self.agent_pct = (self.agent_pct + 5).min(85),
+                    '.' => return self.agent_pct = self.agent_pct.saturating_sub(5).max(15),
+                    _ => {}
+                }
+                if let Some(action) = global_action(c) {
+                    return self.run(action);
+                }
+            }
+        }
+        if self.focus != Focus::Agent && ctrl {
+            match key.code {
+                KeyCode::Char('q') => return self.run(Action::Quit),
+                KeyCode::Char('p') => return self.run(Action::QuickOpen),
+                _ => {}
+            }
+        }
+        match self.focus {
+            Focus::Tree => self.tree_key(key),
+            Focus::Editor => {
+                if self.view.is_some() {
+                    self.view_key(key)
+                } else {
+                    self.editor_key(key)
+                }
+            }
+            Focus::Agent => {
+                self.ensure_agent_started();
+                let restart = self.agent().is_some_and(|a| (a.exited || a.error.is_some()) && key.code == KeyCode::Enter);
+                if restart {
+                    let idx = self.active_agent();
+                    self.agents[idx].reset();
+                    self.start_agent(idx);
+                } else if let Some(a) = self.agent() {
+                    a.send_key(key);
+                }
+                if self.banner.as_ref().is_some_and(|b| b.error) {
+                    self.banner = None;
+                }
+            }
+        }
+    }
+
+    fn view_key(&mut self, key: KeyEvent) {
+        let result = match &mut self.view {
+            Some(View::Review(v)) => v.handle_key(key),
+            Some(View::Activity(v)) => v.handle_key(key),
+            None => return,
+        };
+        self.on_view_result(result);
+    }
+
+    fn on_view_result(&mut self, result: ViewResult) {
+        match result {
+            ViewResult::None => {}
+            ViewResult::Close => self.view = None,
+            ViewResult::Open(path, line) => {
+                self.view = None;
+                self.open_location(&path, Some(line), None, None);
+            }
+            ViewResult::Message(m, err) => {
+                if err {
+                    self.error(m)
+                } else {
+                    self.info(m)
+                }
+            }
+            ViewResult::Changed(m) => {
+                self.info(m);
+                self.refresh_git();
+                self.last_disk_check = Instant::now() - Duration::from_secs(1);
+            }
+            ViewResult::ReviewTurn(i) => {
+                let changed = match &self.view {
+                    Some(View::Activity(v)) => v.turn(i).map(Turn::changed_files),
+                    _ => None,
+                };
+                if let Some(files) = changed {
+                    self.open_review(Some(files));
+                }
+            }
+        }
+    }
+
+    fn tree_key(&mut self, key: KeyEvent) {
+        let page = self.rects.tree.height.max(2) as isize - 1;
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => self.tree.move_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.tree.move_by(1),
+            KeyCode::PageUp => self.tree.move_by(-page),
+            KeyCode::PageDown => self.tree.move_by(page),
+            KeyCode::Home | KeyCode::Char('g') => self.tree.move_by(isize::MIN / 2),
+            KeyCode::End | KeyCode::Char('G') => self.tree.move_by(isize::MAX / 2),
+            KeyCode::Left | KeyCode::Char('h') => self.tree.collapse(),
+            KeyCode::Char('R') => {
+                self.tree.refresh();
+                self.info("tree refreshed");
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let Activate::Open(p) = self.tree.expand() {
+                    self.open_path(&p, None);
+                }
+            }
+            KeyCode::Enter => {
+                if let Activate::Open(p) = self.tree.activate() {
+                    self.open_path(&p, None);
+                    self.focus = Focus::Editor;
+                }
+            }
+            KeyCode::Tab => self.focus = Focus::Editor,
+            _ => {}
+        }
+    }
+
+    fn editor_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Char('g') if ctrl => return self.run(Action::GoToLine),
+            KeyCode::Char('f') if ctrl => return self.run(Action::Find),
+            KeyCode::F(3) => return self.run(Action::FindNext),
+            KeyCode::F(12) if shift => return self.run(Action::FindReferences),
+            KeyCode::F(12) => return self.run(Action::GoToDefinition),
+            KeyCode::Char('w') if ctrl => return self.run(Action::CloseFile),
+            KeyCode::PageUp if ctrl => return self.run(Action::PrevFile),
+            KeyCode::PageDown if ctrl => return self.run(Action::NextFile),
+            KeyCode::Right if alt && shift => return self.run(Action::ExpandSelection),
+            KeyCode::Left if alt && shift => return self.run(Action::ShrinkSelection),
+            KeyCode::Left if alt => return self.run(Action::GoBack),
+            KeyCode::Right if alt => return self.go_forward(),
+            KeyCode::Char('s') if ctrl => {
+                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    match doc.save() {
+                        Ok(()) => {
+                            let (path, name) = (doc.path.clone(), doc.file_name());
+                            self.lsp.did_save(&path);
+                            self.info(format!("saved {name}"));
+                            self.refresh_git();
+                            self.refresh_marks();
+                        }
+                        Err(e) => self.error(format!("save failed: {e}")),
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+        let Some(doc) = self.docs.get_mut(self.active_doc) else {
+            if key.code == KeyCode::Tab || key.code == KeyCode::Esc {
+                self.focus = Focus::Tree;
+            }
+            return;
+        };
+        match doc.handle_key(key) {
+            KeyResult::Copy(text) => {
+                self.copy_to_host(&text);
+                self.info("copied to clipboard");
+            }
+            KeyResult::Message(m) if m.starts_with("save failed") => self.error(m),
+            KeyResult::Message(m) => self.info(m),
+            KeyResult::Handled | KeyResult::Ignored => {}
+        }
+    }
+
+    fn copy_to_host(&mut self, text: &str) {
+        self.host_out.extend_from_slice(b"\x1b]52;c;");
+        self.host_out.extend_from_slice(base64(text.as_bytes()).as_bytes());
+        self.host_out.push(0x07);
+    }
+
+    fn on_mode_key(&mut self, key: KeyEvent) {
+        let mode = std::mem::replace(&mut self.mode, Mode::Normal);
+        match mode {
+            Mode::Normal => {}
+            Mode::Hints { mut typed } => {
+                let all: Vec<FileRef> = self.refs[0].iter().chain(self.refs[1].iter()).cloned().collect();
+                let total = all.len();
+                match key.code {
+                    KeyCode::Enter => {
+                        let newest = self.refs[if self.split { self.active_slot } else { 0 }].last().cloned().or(all.last().cloned());
+                        if let Some(r) = newest {
+                            self.open_ref(&r);
+                        }
+                    }
+                    KeyCode::Char(c) if HINT_KEYS.contains(c) => {
+                        typed.push(c);
+                        if let Some(i) = (0..total).find(|&i| hint_label(i, total) == typed) {
+                            self.open_ref(&all[i]);
+                        } else if (0..total).any(|i| hint_label(i, total).starts_with(&typed)) {
+                            self.mode = Mode::Hints { typed };
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Mode::Picker(mut p) => match p.handle_key(key) {
+                Outcome::Cancel => {}
+                Outcome::Accept(target) => {
+                    let query = p.query.clone();
+                    let kind = p.kind;
+                    self.accept(target, &query, kind);
+                }
+                Outcome::QueryChanged => {
+                    let files = p.kind == Kind::Files;
+                    self.mode = Mode::Picker(p);
+                    if files {
+                        self.update_quick_open();
+                    }
+                }
+                Outcome::None => self.mode = Mode::Picker(p),
+            },
+            Mode::Prompt { kind, mut input } => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => self.submit_prompt(kind, input),
+                KeyCode::Backspace => {
+                    input.pop();
+                    self.mode = Mode::Prompt { kind, input };
+                }
+                KeyCode::Char(c) => {
+                    input.push(c);
+                    self.mode = Mode::Prompt { kind, input };
+                }
+                _ => self.mode = Mode::Prompt { kind, input },
+            },
+        }
+    }
+
+    fn submit_prompt(&mut self, kind: PromptKind, input: String) {
+        match kind {
+            PromptKind::GotoLine => {
+                let mut parts = input.split(':').map(|s| s.trim().parse::<usize>().ok());
+                if let (Some(Some(line)), Some(doc)) = (parts.next(), self.docs.get_mut(self.active_doc)) {
+                    doc.goto(line, parts.next().flatten(), None);
+                }
+            }
+            PromptKind::Find => {
+                let q = if input.is_empty() { self.last_find.clone() } else { input };
+                self.find(&q);
+            }
+            PromptKind::NewBranch => self.git_op(|r| r.create_branch(input.trim()).map(|_| format!("switched to new branch {}", input.trim()))),
+            PromptKind::Commit => {
+                if input.trim().is_empty() {
+                    return self.error("empty commit message");
+                }
+                self.git_op(|r| r.commit(input.trim()));
+            }
+            PromptKind::WorktreeName(kind) => self.new_worktree_agent(kind, input.trim()),
+        }
+    }
+
+    fn git_op(&mut self, f: impl FnOnce(&Repo) -> anyhow::Result<String>) {
+        let Some(repo) = self.repo.clone() else { return self.error("not a git repository") };
+        match f(&repo) {
+            Ok(msg) => self.info(msg),
+            Err(e) => self.error(format!("{e:#}")),
+        }
+        self.refresh_git();
+        self.last_disk_check = Instant::now() - Duration::from_secs(1);
+    }
+
+    fn find(&mut self, query: &str) {
+        if query.is_empty() {
+            return;
+        }
+        self.last_find = query.to_string();
+        let Some(doc) = self.docs.get_mut(self.active_doc) else { return };
+        if !doc.find(query) {
+            self.error(format!("not found: {query}"));
+        }
+    }
+
+    fn on_mouse(&mut self, m: MouseEvent) {
+        let (x, y) = (m.column, m.row);
+        let inside = |r: Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        let r = &self.rects;
+        let (tree, editor, tree_block, main) = (r.tree, r.editor, r.tree_block, r.main);
+        let agent_areas = r.agents;
+        let agent_blocks = r.agent_blocks;
+        let agent_area = r.agent_area;
+        let slot_at = (0..2).find(|&s| agent_areas[s].width > 0 && inside(agent_areas[s]));
+
+        self.hover = slot_at.map(|s| (s, y - agent_areas[s].y, x - agent_areas[s].x));
+
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if !matches!(self.mode, Mode::Normal) {
+                    self.mode = Mode::Normal;
+                }
+                let title_slot = (0..2).find(|&s| agent_blocks[s].width > 0 && y == agent_blocks[s].y && inside(agent_blocks[s]));
+                if agent_area.width > 0 && x == agent_area.x && y > agent_area.y {
+                    self.drag = Drag::AgentDivider;
+                } else if tree_block.width > 0 && x + 1 == tree_block.x + tree_block.width && y > tree_block.y {
+                    self.drag = Drag::TreeDivider;
+                } else if self.split && y == agent_blocks[1].y && inside(agent_blocks[1]) && x < agent_blocks[1].x + 2 {
+                    self.drag = Drag::SplitDivider;
+                } else if let Some(slot) = title_slot {
+                    let hit = self.rects.agent_tabs[slot].iter().find(|(a, b, _)| x >= *a && x < *b).map(|t| t.2);
+                    if let Some(i) = hit {
+                        self.assign_slot(slot, i);
+                    }
+                    self.active_slot = slot;
+                    self.set_focus(Focus::Agent);
+                } else if y == self.rects.editor_block.y && inside(self.rects.editor_block) {
+                    let hit = self.rects.doc_tabs.iter().find(|(a, b, _)| x >= *a && x < *b).map(|t| t.2);
+                    if let Some(i) = hit {
+                        self.view = None;
+                        self.active_doc = i;
+                        let p = self.docs[i].path.clone();
+                        self.tree.reveal(&p);
+                        self.refresh_marks();
+                    }
+                    self.focus = Focus::Editor;
+                } else if inside(tree) {
+                    self.focus = Focus::Tree;
+                    if let Some(i) = self.tree.row_at(tree, y) {
+                        self.tree.selected = i;
+                        if let Activate::Open(p) = self.tree.activate() {
+                            self.open_path(&p, None);
+                        }
+                    }
+                } else if inside(editor) {
+                    self.focus = Focus::Editor;
+                    match &mut self.view {
+                        Some(View::Review(v)) => v.click(y),
+                        Some(View::Activity(v)) => {
+                            let r = v.click(y);
+                            self.on_view_result(r);
+                        }
+                        None => {
+                            if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                                doc.click(editor, x, y, m.modifiers.contains(KeyModifiers::SHIFT));
+                                self.drag = Drag::Editor;
+                                if m.modifiers.contains(KeyModifiers::CONTROL) {
+                                    self.run(Action::GoToDefinition);
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(slot) = slot_at {
+                    let (row, col) = (y - agent_areas[slot].y, x - agent_areas[slot].x);
+                    self.active_slot = slot;
+                    if let Some(r) = self.refs[slot].iter().find(|r| r.contains(row, col)).cloned() {
+                        self.open_ref(&r);
+                    } else {
+                        self.set_focus(Focus::Agent);
+                        let idx = self.active_agent();
+                        if let Some(a) = self.agents.get_mut(idx) {
+                            a.forward_mouse(m, agent_areas[slot]);
+                        }
+                    }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Middle) if y == self.rects.editor_block.y => {
+                if let Some(i) = self.rects.doc_tabs.iter().find(|(a, b, _)| x >= *a && x < *b).map(|t| t.2) {
+                    self.active_doc = i;
+                    self.run(Action::CloseFile);
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => match self.drag {
+                Drag::Editor => {
+                    if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                        doc.drag(editor, x, y);
+                    }
+                }
+                Drag::AgentDivider if main.width > 0 => {
+                    let right = main.x + main.width;
+                    self.agent_pct = ((right.saturating_sub(x)) as u32 * 100 / main.width as u32).clamp(15, 85) as u16;
+                }
+                Drag::TreeDivider => self.tree_width = (x.saturating_sub(main.x) + 1).clamp(12, 80),
+                Drag::SplitDivider if agent_area.height > 0 => {
+                    self.split_pct = ((y.saturating_sub(agent_area.y)) as u32 * 100 / agent_area.height as u32).clamp(15, 85) as u16;
+                }
+                _ => {
+                    if let Some(slot) = slot_at {
+                        let idx = self.slots[slot];
+                        if let Some(a) = self.agents.get_mut(idx) {
+                            a.forward_mouse(m, agent_areas[slot]);
+                        }
+                    }
+                }
+            },
+            MouseEventKind::Up(_) => {
+                self.drag = Drag::None;
+                if let Some(slot) = slot_at {
+                    let idx = self.slots[slot];
+                    if let Some(a) = self.agents.get_mut(idx) {
+                        a.forward_mouse(m, agent_areas[slot]);
+                    }
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let delta: isize = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
+                if inside(tree) {
+                    self.tree.scroll(delta);
+                } else if inside(editor) {
+                    match &mut self.view {
+                        Some(View::Review(v)) => v.scroll_by(delta),
+                        Some(View::Activity(v)) => v.scroll_by(delta),
+                        None => {
+                            if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                                doc.scroll(delta);
+                            }
+                        }
+                    }
+                } else if let Some(slot) = slot_at {
+                    let idx = self.slots[slot];
+                    if let Some(a) = self.agents.get_mut(idx) {
+                        if !a.forward_mouse(m, agent_areas[slot]) {
+                            a.scroll(-delta);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ---- commands ----
+
+    fn set_focus(&mut self, f: Focus) {
+        self.focus = f;
+        if f == Focus::Agent {
+            self.ensure_agent_started();
+            let idx = self.active_agent();
+            if let Some(a) = self.agents.get_mut(idx) {
+                a.seen();
+            }
+        }
+    }
+
+    fn assign_slot(&mut self, slot: usize, agent: usize) {
+        if self.split && self.slots[1 - slot] == agent {
+            self.slots.swap(0, 1);
+        } else {
+            self.slots[slot] = agent;
+        }
+        self.agents[agent].seen();
+    }
+
+    pub fn run(&mut self, action: Action) {
+        match action {
+            Action::CommandPalette | Action::Keys => self.open_palette(),
+            Action::QuickOpen => {
+                if self.index_built.is_none_or(|t| t.elapsed() > Duration::from_secs(10)) {
+                    self.rebuild_index();
+                }
+                self.mode = Mode::Picker(Picker::new("Open File", Kind::Files, Vec::new()));
+                self.update_quick_open();
+            }
+            Action::GoToLine => self.mode = Mode::Prompt { kind: PromptKind::GotoLine, input: String::new() },
+            Action::Find => self.mode = Mode::Prompt { kind: PromptKind::Find, input: String::new() },
+            Action::FindNext => {
+                let q = self.last_find.clone();
+                self.find(&q);
+            }
+            Action::Save => self.editor_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            Action::SaveAll => {
+                let mut n = 0;
+                for d in self.docs.iter_mut().filter(|d| d.dirty) {
+                    if d.save().is_ok() {
+                        n += 1;
+                    }
+                }
+                self.info(format!("saved {n} files"));
+                self.refresh_git();
+            }
+            Action::CloseFile => self.close_doc(),
+            Action::NextFile => self.cycle_doc(1),
+            Action::PrevFile => self.cycle_doc(-1),
+            Action::ToggleTree => {
+                self.show_tree = !self.show_tree;
+                if !self.show_tree && self.focus == Focus::Tree {
+                    self.focus = Focus::Editor;
+                }
+            }
+            Action::Zoom => self.zoom = !self.zoom,
+            Action::GoBack => self.go_back(),
+            Action::JumpToRef => self.start_hints(),
+            Action::FocusTree => {
+                self.show_tree = true;
+                self.set_focus(Focus::Tree);
+            }
+            Action::FocusEditor => self.set_focus(Focus::Editor),
+            Action::FocusAgent => self.set_focus(Focus::Agent),
+            Action::SendSelection => self.send_context(None, true),
+            Action::SendFile => self.send_context(None, false),
+            Action::Ask(ask) => self.send_context(Some(ask.prompt()), true),
+            Action::NextAgent => {
+                if self.agents.len() > 1 {
+                    let slot = if self.split { self.active_slot } else { 0 };
+                    let mut next = (self.slots[slot] + 1) % self.agents.len();
+                    if self.split && next == self.slots[1 - slot] && self.agents.len() > 2 {
+                        next = (next + 1) % self.agents.len();
+                    }
+                    self.assign_slot(slot, next);
+                }
+                self.set_focus(Focus::Agent);
+            }
+            Action::NewAgent(kind) => {
+                let command = match kind {
+                    AgentKind::Shell => std::env::var("SHELL").unwrap_or_else(|_| "bash".into()),
+                    k => k.name().to_string(),
+                };
+                let name = self.unique_name(kind.name());
+                let root = self.root.clone();
+                let idx = self.push_agent(&name, &command, root);
+                self.show_agent(idx);
+            }
+            Action::CloseAgent => self.close_agent(),
+            Action::RestartAgent => {
+                let idx = self.active_agent();
+                if let Some(a) = self.agents.get_mut(idx) {
+                    a.kill();
+                    a.reset();
+                    self.start_agent(idx);
+                    self.info("agent restarted");
+                }
+            }
+            Action::ToggleSplit => {
+                if self.agents.len() < 2 {
+                    self.run(Action::NewAgent(AgentKind::Shell));
+                }
+                self.split = !self.split;
+                if self.split && self.slots[0] == self.slots[1] {
+                    self.slots[1] = (self.slots[0] + 1) % self.agents.len();
+                }
+                self.active_slot = 0;
+                self.start_visible_agents();
+            }
+            Action::OtherAgentPane => {
+                if self.split {
+                    self.active_slot = 1 - self.active_slot;
+                }
+                self.set_focus(Focus::Agent);
+            }
+            Action::ReviewChanges => {
+                let only = self.banner.as_ref().filter(|b| !b.changed.is_empty()).map(|b| b.changed.clone());
+                self.open_review(only);
+            }
+            Action::AcceptAllChanges => self.git_op(|r| r.stage_all().map(|_| "staged all changes".to_string())),
+            Action::SwitchBranch => {
+                let Some(repo) = &self.repo else { return self.error("not a git repository") };
+                match repo.branches() {
+                    Ok(branches) => {
+                        let items = branches
+                            .into_iter()
+                            .map(|(b, current)| Item::new(b.clone(), if current { "current" } else { "" }, Target::Branch(b)))
+                            .collect();
+                        self.mode = Mode::Picker(Picker::new("Switch Branch", Kind::Static, items));
+                    }
+                    Err(e) => self.error(format!("{e:#}")),
+                }
+            }
+            Action::NewBranch => self.mode = Mode::Prompt { kind: PromptKind::NewBranch, input: String::new() },
+            Action::Commit => self.mode = Mode::Prompt { kind: PromptKind::Commit, input: String::new() },
+            Action::AgentActivity => {
+                self.view = Some(View::Activity(ActivityView::new("Agent Activity".into(), self.root.clone(), self.activity.turns.clone())));
+                self.focus = Focus::Editor;
+            }
+            Action::AgentHistory => {
+                self.history = self.activity.history();
+                let items = self
+                    .history
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let when = sessions::ago(std::time::UNIX_EPOCH + Duration::from_secs(t.started));
+                        Item::new(format!("{} · {}", t.agent, t.prompt.split_whitespace().collect::<Vec<_>>().join(" ")), format!("{} · {when}", t.summary()), Target::History(i))
+                    })
+                    .collect();
+                self.mode = Mode::Picker(Picker::new("Agent History", Kind::Static, items).ordered());
+            }
+            Action::Handoff { from, to } => self.handoff(from, to),
+            Action::Sessions => {
+                self.mode = Mode::Picker(Picker::new("Sessions", Kind::Static, session_tab_items(&self.agents)).ordered());
+                let tx = self.tx.clone();
+                let root = self.root.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(Bg::Sessions(sessions::list(&root)));
+                });
+            }
+            Action::GoToSymbol => {
+                let Some(doc) = self.doc() else { return self.info("open a file first") };
+                let path = doc.path.clone();
+                let items: Vec<Item> = symbols::outline(&path, &doc.text())
+                    .into_iter()
+                    .map(|s| Item::new(s.name, s.kind, Target::File { path: path.clone(), line: Some(s.line + 1), col: Some(s.col + 1) }).hint(format!("L{}", s.line + 1)))
+                    .collect();
+                if items.is_empty() {
+                    return self.info("no symbols found (supported: Rust, TS/JS, Python, Go, Java)");
+                }
+                self.mode = Mode::Picker(Picker::new("Go to Symbol in File", Kind::Static, items).ordered());
+            }
+            Action::GoToProjectSymbol => {
+                if self.symbols.symbols.is_empty() {
+                    self.rebuild_symbols();
+                    return self.info("indexing symbols…");
+                }
+                let items = self
+                    .symbols
+                    .symbols
+                    .iter()
+                    .take(50_000)
+                    .map(|(p, s)| {
+                        Item::new(s.name.clone(), format!("{} · {}:{}", s.kind, refs::relative(&self.root, p), s.line + 1), Target::File { path: p.clone(), line: Some(s.line + 1), col: Some(s.col + 1) })
+                    })
+                    .collect();
+                self.mode = Mode::Picker(Picker::new("Go to Symbol in Project", Kind::Static, items));
+            }
+            Action::GoToDefinition => {
+                let Some(doc) = self.doc() else { return };
+                let Some(word) = doc.word_at_cursor() else { return self.info("no symbol at cursor") };
+                let (path, line, col) = (doc.path.clone(), doc.cursor_line0(), doc.utf16_col());
+                if self.lsp.request(Request::Definition, &path, line, col) {
+                    self.pending_definition = Some(word);
+                } else {
+                    self.symbol_definition(&word);
+                }
+            }
+            Action::FindReferences => {
+                let Some(doc) = self.doc() else { return };
+                let Some(word) = doc.word_at_cursor() else { return self.info("no symbol at cursor") };
+                let (path, line, col) = (doc.path.clone(), doc.cursor_line0(), doc.utf16_col());
+                if !self.lsp.request(Request::References, &path, line, col) {
+                    let hits = symbols::find_references(&self.root, &self.file_index.files, &word, 2000);
+                    let items = hits
+                        .into_iter()
+                        .map(|(p, l, c, text)| Item::new(format!("{}:{}", refs::relative(&self.root, &p), l + 1), text, Target::File { path: p, line: Some(l + 1), col: Some(c + 1) }))
+                        .collect();
+                    self.mode = Mode::Picker(Picker::new(format!("References: {word}"), Kind::Static, items).ordered());
+                }
+            }
+            Action::ExpandSelection => {
+                let Some(doc) = self.docs.get_mut(self.active_doc) else { return };
+                let text = doc.text();
+                match symbols::expand(&doc.path, &text, doc.selection_bytes()) {
+                    Some(range) => doc.expand_to(range),
+                    None => self.info("structural selection needs a supported language"),
+                }
+            }
+            Action::ShrinkSelection => {
+                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    doc.shrink_selection();
+                }
+            }
+            Action::Problems => {
+                let mut all: Vec<(&PathBuf, &lsp::Diagnostic)> = self.lsp.diagnostics.iter().flat_map(|(p, ds)| ds.iter().map(move |d| (p, d))).collect();
+                all.sort_by_key(|(p, d)| (d.severity, (*p).clone(), d.line));
+                let items = all
+                    .into_iter()
+                    .map(|(p, d)| {
+                        let icon = if d.severity <= 1 { "✗" } else if d.severity == 2 { "⚠" } else { "ℹ" };
+                        Item::new(format!("{icon} {}", d.message), format!("{}:{} {}", refs::relative(&self.root, p), d.line + 1, d.source), Target::File { path: p.clone(), line: Some(d.line + 1), col: Some(d.col + 1) })
+                    })
+                    .collect::<Vec<_>>();
+                if items.is_empty() {
+                    return self.info("no problems reported (language servers report as files open)");
+                }
+                self.mode = Mode::Picker(Picker::new("Problems", Kind::Static, items).ordered());
+            }
+            Action::FixProblem => self.fix_problem(),
+            Action::NewWorktreeAgent(kind) => {
+                if self.repo.is_none() {
+                    return self.error("worktrees need a git repository");
+                }
+                self.mode = Mode::Prompt { kind: PromptKind::WorktreeName(kind), input: String::new() };
+            }
+            Action::ApplyWorktree => {
+                let idx = self.active_agent();
+                let Some((path, _)) = self.agents.get(idx).and_then(|a| a.worktree.clone()) else {
+                    return self.error("the active agent tab is not in a worktree");
+                };
+                self.git_op(|r| r.apply_worktree(&Repo { root: path }).map(|n| format!("applied {n} changed files from the worktree")));
+            }
+            Action::RemoveWorktree => {
+                let idx = self.active_agent();
+                let Some((path, branch)) = self.agents.get(idx).and_then(|a| a.worktree.clone()) else {
+                    return self.error("the active agent tab is not in a worktree");
+                };
+                if !self.confirmed("remove-worktree") {
+                    return self.error(format!("remove worktree {branch} and discard its changes? run again to confirm"));
+                }
+                self.agents[idx].kill();
+                self.git_op(|r| r.remove_worktree(&path, &branch).map(|_| format!("removed worktree {branch}")));
+                self.remove_agent(idx);
+            }
+            Action::Quit => self.request_quit(),
+        }
+    }
+
+    fn open_palette(&mut self) {
+        let mut items: Vec<Item> = Action::palette()
+            .into_iter()
+            .filter_map(|a| a.describe().map(|(label, key)| Item::new(label, "", Target::Action(a)).hint(key)))
+            .collect();
+        for (fi, from) in self.agents.iter().enumerate() {
+            let Some(turn) = self.activity.last_turn(&from.name) else { continue };
+            for (ti, to) in self.agents.iter().enumerate() {
+                if ti != fi && to.kind.is_some() {
+                    items.push(Item::new(format!("Handoff: Ask {} to Review {}'s Changes", to.name, from.name), turn.summary(), Target::Action(Action::Handoff { from: fi, to: ti })));
+                }
+            }
+        }
+        self.mode = Mode::Picker(Picker::new("Command Palette", Kind::Static, items));
+    }
+
+    fn accept(&mut self, target: Target, query: &str, kind: Kind) {
+        match target {
+            Target::File { path, line, col } => {
+                let line = line.or_else(|| if kind == Kind::Files { refs::split_line_suffix(query).1 } else { None });
+                self.view = None;
+                self.open_location(&path, line, col, None);
+                self.focus = Focus::Editor;
+            }
+            Target::Action(a) => self.run(a),
+            Target::Branch(b) => self.git_op(|r| r.switch(&b).map(|_| format!("switched to {b}"))),
+            Target::History(i) => {
+                if let Some(t) = self.history.get(i).cloned() {
+                    self.view = Some(View::Activity(ActivityView::new(format!("History: {}", t.agent), self.root.clone(), vec![t])));
+                    self.focus = Focus::Editor;
+                }
+            }
+            Target::AgentTab(i) => self.show_agent(i),
+            Target::Resume(kind, id) => {
+                if let Some(i) = self.agents.iter().position(|a| a.session_id.as_deref() == Some(&id)) {
+                    return self.show_agent(i);
+                }
+                let command = match kind {
+                    AgentKind::Codex => format!("codex resume {id}"),
+                    _ => format!("claude --resume {id}"),
+                };
+                let name = self.unique_name(kind.name());
+                let root = self.root.clone();
+                let idx = self.push_agent(&name, &command, root);
+                if kind == AgentKind::Claude {
+                    self.agents[idx].session_id = Some(id);
+                }
+                self.show_agent(idx);
+                self.resuming.insert(self.agents[idx].id);
+            }
+        }
+    }
+
+    fn show_agent(&mut self, idx: usize) {
+        let slot = if self.split { self.active_slot } else { 0 };
+        self.assign_slot(slot, idx);
+        if self.zoom && self.focus != Focus::Agent {
+            self.zoom = false;
+        }
+        self.set_focus(Focus::Agent);
+    }
+
+    fn remove_agent(&mut self, idx: usize) {
+        if idx >= self.agents.len() {
+            return;
+        }
+        self.agents.remove(idx);
+        for s in &mut self.slots {
+            if *s > idx {
+                *s -= 1;
+            } else if *s == idx {
+                *s = 0;
+            }
+        }
+        if self.agents.len() < 2 || self.slots[0] == self.slots[1] {
+            self.split = false;
+            self.active_slot = 0;
+        }
+    }
+
+    fn close_agent(&mut self) {
+        let idx = self.active_agent();
+        let Some(a) = self.agents.get(idx) else { return };
+        let (running, name, worktree) = (a.running(), a.name.clone(), a.worktree.clone());
+        if running && !self.confirmed("close-agent") {
+            return self.error(format!("{name} is still running — run Close Tab again to stop it"));
+        }
+        if let Some((_, branch)) = worktree {
+            self.info(format!("closed tab; worktree {branch} kept (use Worktree: Remove to delete it)"));
+        }
+        self.agents[idx].kill();
+        self.remove_agent(idx);
+    }
+
+    fn open_review(&mut self, only: Option<Vec<String>>) {
+        let idx = self.active_agent();
+        let (repo, title) = match self.agents.get(idx).and_then(|a| a.worktree.clone()) {
+            Some((path, branch)) => (Some(Repo { root: path }), format!("Changes · {branch}")),
+            None => (self.repo.clone(), "Changes".to_string()),
+        };
+        let Some(repo) = repo else { return self.error("not a git repository") };
+        match ReviewView::new(title, repo, only) {
+            Ok(v) => {
+                if v.is_empty() {
+                    self.info("no unstaged changes to review");
+                }
+                self.view = Some(View::Review(v));
+                self.focus = Focus::Editor;
+                self.banner = None;
+            }
+            Err(e) => self.error(e),
+        }
+    }
+
+    fn handoff(&mut self, from: usize, to: usize) {
+        let (Some(f), Some(_)) = (self.agents.get(from), self.agents.get(to)) else { return };
+        let turn = self.activity.last_turn(&f.name).cloned().unwrap_or_default();
+        let files = turn.changed_files();
+        let mut prompt = format!("Review the changes {} just made", f.name);
+        if !turn.prompt.is_empty() {
+            prompt.push_str(&format!(" for the task \"{}\"", turn.prompt.split_whitespace().collect::<Vec<_>>().join(" ")));
+        }
+        prompt.push('.');
+        if files.is_empty() {
+            prompt.push_str(" Use `git diff` to see them.");
+        } else {
+            let list: Vec<String> = files.iter().map(|p| format!("@{p}")).collect();
+            prompt.push_str(&format!(" Changed files: {}. Use `git diff -- {}` to see exactly what changed.", list.join(" "), files.join(" ")));
+        }
+        prompt.push_str(" Focus on correctness, edge cases, performance and security. Cite file:line for each finding. ");
+        self.show_agent(to);
+        if let Some(a) = self.agent() {
+            a.paste(&prompt);
+        }
+    }
+
+    fn new_worktree_agent(&mut self, kind: AgentKind, name: &str) {
+        let Some(repo) = self.repo.clone() else { return };
+        let name = if name.is_empty() { "task" } else { name };
+        match repo.add_worktree(name) {
+            Ok((path, branch)) => {
+                let slug = branch.trim_start_matches("noida/").to_string();
+                let tab = self.unique_name(&format!("{}@{slug}", kind.name()));
+                let command = match kind {
+                    AgentKind::Shell => std::env::var("SHELL").unwrap_or_else(|_| "bash".into()),
+                    k => k.name().to_string(),
+                };
+                let idx = self.push_agent(&tab, &command, path.clone());
+                self.agents[idx].worktree = Some((path, branch.clone()));
+                self.show_agent(idx);
+                self.info(format!("{tab} works in its own worktree on branch {branch}; Alt+r reviews its changes"));
+            }
+            Err(e) => self.error(format!("{e:#}")),
+        }
+    }
+
+    fn send_context(&mut self, prompt: Option<&str>, lines: bool) {
+        let Some(doc) = self.doc() else { return self.info("open a file first") };
+        let rel = refs::relative(&self.root, &doc.path).to_string();
+        let ctx = if lines {
+            let (s, e) = doc.selected_lines();
+            if s == e { format!("@{rel}#L{s}") } else { format!("@{rel}#L{s}-{e}") }
+        } else {
+            format!("@{rel}")
+        };
+        let text = match prompt {
+            Some(p) => format!("{ctx} {p} "),
+            None => format!("{ctx} "),
+        };
+        self.set_focus(Focus::Agent);
+        if let Some(a) = self.agent() {
+            a.paste(&text);
+        }
+    }
+
+    fn fix_problem(&mut self) {
+        let Some(doc) = self.doc() else { return self.info("open a file first") };
+        let line = doc.cursor_line0();
+        let Some(diags) = self.lsp.diagnostics.get(&doc.path) else { return self.info("no problems in this file") };
+        let Some(d) = diags.iter().min_by_key(|d| (d.line.abs_diff(line), d.severity)).cloned() else { return };
+        let rel = refs::relative(&self.root, &doc.path).to_string();
+        let sev = match d.severity {
+            1 => "error",
+            2 => "warning",
+            _ => "problem",
+        };
+        let source = if d.source.is_empty() { String::new() } else { format!(" ({})", d.source) };
+        let text = format!("Fix this {sev} at @{rel}#L{}: {}{source} ", d.line + 1, d.message);
+        self.set_focus(Focus::Agent);
+        if let Some(a) = self.agent() {
+            a.paste(&text);
+        }
+    }
+
+    fn symbol_definition(&mut self, word: &str) {
+        let defs: Vec<(PathBuf, crate::symbols::Symbol)> = self.symbols.definitions(word).into_iter().cloned().collect();
+        match defs.len() {
+            0 => self.info(format!("no definition found for {word}")),
+            1 => {
+                let (p, s) = &defs[0];
+                self.open_location(&p.clone(), Some(s.line + 1), Some(s.col + 1), None);
+            }
+            _ => {
+                let items = defs
+                    .into_iter()
+                    .map(|(p, s)| Item::new(format!("{}:{}", refs::relative(&self.root, &p), s.line + 1), s.kind, Target::File { path: p, line: Some(s.line + 1), col: Some(s.col + 1) }))
+                    .collect();
+                self.mode = Mode::Picker(Picker::new(format!("Definitions: {word}"), Kind::Static, items).ordered());
+            }
+        }
+    }
+
+    fn on_locations(&mut self, kind: Request, locs: Vec<lsp::Location>) {
+        let word = self.pending_definition.take();
+        if locs.is_empty() {
+            if let (Request::Definition, Some(w)) = (kind, word) {
+                return self.symbol_definition(&w);
+            }
+            return self.info("no results");
+        }
+        // LSP columns are UTF-16; files not yet open are converted after opening.
+        if locs.len() == 1 {
+            let (p, line, col16) = locs[0].clone();
+            self.open_location(&p, Some(line + 1), None, None);
+            if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                let col = doc.char_col_from_utf16(line, col16);
+                doc.goto(line + 1, Some(col + 1), None);
+            }
+            return;
+        }
+        let title = if kind == Request::Definition { "Definitions" } else { "References" };
+        let items = locs
+            .into_iter()
+            .map(|(p, l, c)| {
+                let text = std::fs::read_to_string(&p).ok().and_then(|t| t.lines().nth(l).map(|s| s.trim().to_string())).unwrap_or_default();
+                Item::new(format!("{}:{}", refs::relative(&self.root, &p), l + 1), text, Target::File { path: p, line: Some(l + 1), col: Some(c + 1) })
+            })
+            .collect();
+        self.mode = Mode::Picker(Picker::new(title, Kind::Static, items).ordered());
+    }
+
+    fn request_quit(&mut self) {
+        let dirty: Vec<String> = self.docs.iter().filter(|d| d.dirty).map(Doc::file_name).collect();
+        if dirty.is_empty() || self.confirmed("quit") {
+            self.save_workspace();
+            self.quit = true;
+        } else {
+            self.error(format!("unsaved: {} — press again to quit anyway", dirty.join(", ")));
+        }
+    }
+
+    fn cycle_doc(&mut self, delta: isize) {
+        if self.docs.is_empty() {
+            return;
+        }
+        self.view = None;
+        let n = self.docs.len() as isize;
+        self.active_doc = ((self.active_doc as isize + delta).rem_euclid(n)) as usize;
+        let path = self.docs[self.active_doc].path.clone();
+        self.tree.reveal(&path);
+        self.refresh_marks();
+    }
+
+    fn close_doc(&mut self) {
+        if self.view.is_some() {
+            self.view = None;
+            return;
+        }
+        let Some(doc) = self.doc() else { return };
+        let (dirty, name) = (doc.dirty, doc.file_name());
+        if dirty && !self.confirmed("close-doc") {
+            return self.error(format!("{name} has unsaved changes — close again to discard"));
+        }
+        let path = self.docs[self.active_doc].path.clone();
+        self.lsp.did_close(&path);
+        self.lsp_synced.remove(&path);
+        self.docs.remove(self.active_doc);
+        self.active_doc = self.active_doc.min(self.docs.len().saturating_sub(1));
+        self.refresh_marks();
+    }
+
+    // ---- navigation ----
+
+    pub fn open_path(&mut self, path: &Path, line: Option<usize>) {
+        self.open_location(path, line, None, None);
+    }
+
+    fn open_ref(&mut self, r: &FileRef) {
+        if let Some(name) = &r.symbol {
+            if r.ambiguous.is_some() {
+                return self.symbol_definition(&name.clone());
+            }
+        } else if let Some(partial) = &r.ambiguous {
+            let query = match r.line {
+                Some(l) => format!("{partial}:{l}"),
+                None => partial.clone(),
+            };
+            self.mode = Mode::Picker(Picker::new("Open File", Kind::Files, Vec::new()).with_query(query));
+            self.update_quick_open();
+            return self.info(format!("{partial} matches several files — pick one"));
+        }
+        self.view = None;
+        self.open_location(&r.path.clone(), r.line, r.col, r.end_line);
+    }
+
+    fn here(&self) -> Option<Loc> {
+        self.doc().map(|d| (d.path.clone(), d.cursor_line(), d.cursor_col()))
+    }
+
+    fn open_location(&mut self, path: &Path, line: Option<usize>, col: Option<usize>, end_line: Option<usize>) {
+        if path.is_dir() {
+            self.show_tree = true;
+            self.tree.reveal(&path.join("_"));
+            return self.info(format!("revealed {}", refs::relative(&self.root, path)));
+        }
+        if let Some(here) = self.here() {
+            if here.0 != path || line.is_some_and(|l| l != here.1) {
+                self.back.push(here);
+                self.forward.clear();
+                if self.back.len() > 100 {
+                    self.back.remove(0);
+                }
+            }
+        }
+        let idx = match self.docs.iter().position(|d| d.path == path) {
+            Some(i) => i,
+            None => match Doc::open(path, &self.syntax) {
+                Ok(doc) => {
+                    self.lsp.did_open(&doc.path, &doc.text());
+                    self.lsp_synced.insert(doc.path.clone(), doc.edits);
+                    self.docs.push(doc);
+                    self.docs.len() - 1
+                }
+                Err(e) => return self.error(format!("cannot open {}: {e}", refs::relative(&self.root, path))),
+            },
+        };
+        self.active_doc = idx;
+        if let Some(l) = line {
+            self.docs[idx].goto(l, col, end_line);
+        }
+        if self.zoom && self.focus == Focus::Agent {
+            self.zoom = false;
+        }
+        self.tree.reveal(path);
+        self.refresh_marks();
+        let rel = refs::relative(&self.root, path).to_string();
+        self.info(match line {
+            Some(l) => format!("{rel}:{l}"),
+            None => rel,
+        });
+    }
+
+    fn jump(&mut self, loc: Loc) {
+        let idx = match self.docs.iter().position(|d| d.path == loc.0) {
+            Some(i) => i,
+            None => {
+                let depth = (self.back.len(), self.forward.len());
+                self.open_location(&loc.0, Some(loc.1), Some(loc.2), None);
+                self.back.truncate(depth.0);
+                return;
+            }
+        };
+        self.view = None;
+        self.active_doc = idx;
+        self.docs[idx].goto(loc.1, Some(loc.2), None);
+        self.tree.reveal(&loc.0);
+        self.refresh_marks();
+    }
+
+    fn go_back(&mut self) {
+        let Some(loc) = self.back.pop() else { return self.info("no previous location") };
+        if let Some(here) = self.here() {
+            self.forward.push(here);
+        }
+        self.jump(loc);
+    }
+
+    fn go_forward(&mut self) {
+        let Some(loc) = self.forward.pop() else { return self.info("no next location") };
+        if let Some(here) = self.here() {
+            self.back.push(here);
+        }
+        self.jump(loc);
+    }
+
+    fn start_hints(&mut self) {
+        if self.zoom && self.focus != Focus::Agent {
+            self.zoom = false;
+        }
+        if self.refs[0].is_empty() && self.refs[1].is_empty() {
+            return self.info("no file references visible in the agent pane");
+        }
+        self.mode = Mode::Hints { typed: String::new() };
+    }
+
+    fn update_quick_open(&mut self) {
+        let Mode::Picker(p) = &mut self.mode else { return };
+        if p.kind != Kind::Files {
+            return;
+        }
+        let (q, _) = refs::split_line_suffix(&p.query);
+        let q = q.to_lowercase();
+        let files = &self.file_index.files;
+        let item = |rel: &String| {
+            let (dir, name) = rel.rsplit_once('/').map_or(("", rel.as_str()), |(d, n)| (d, n));
+            Item::new(name, dir, Target::File { path: self.root.join(rel), line: None, col: None })
+        };
+        let items: Vec<Item> = if q.is_empty() {
+            let open: Vec<String> = self.docs.iter().rev().filter(|d| d.path.starts_with(&self.root)).map(|d| refs::relative(&self.root, &d.path).into_owned()).collect();
+            open.iter().chain(files.iter().filter(|f| !open.contains(f)).take(300)).map(item).collect()
+        } else {
+            let mut scored: Vec<(i64, &String)> = files.iter().filter_map(|f| crate::picker::fuzzy_score(&q, f).map(|s| (s, f))).collect();
+            scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.len().cmp(&b.1.len())));
+            scored.into_iter().take(300).map(|(_, f)| item(f)).collect()
+        };
+        p.set_items(items);
+    }
+}
+
+fn session_tab_items(agents: &[Agent]) -> Vec<Item> {
+    let mut items: Vec<Item> = agents
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let state = if a.running() { "running" } else if a.started() { "stopped" } else { "not started" };
+            let wt = a.worktree.as_ref().map(|(_, b)| format!(" · worktree {b}")).unwrap_or_default();
+            Item::new(format!("{} {}", a.status_glyph(), a.name), format!("tab · {state}{wt}"), Target::AgentTab(i))
+        })
+        .collect();
+    for kind in [AgentKind::Claude, AgentKind::Codex, AgentKind::Shell] {
+        items.push(Item::new(format!("+ New {} tab", kind.name()), "", Target::Action(Action::NewAgent(kind))));
+    }
+    items
+}
+
+/// Alt+key shortcuts that work from every pane. Chosen to avoid Claude Code's
+/// own Meta bindings (p, t, b, f, m) and terminal escape ambiguities (O, [, \).
+fn global_action(c: char) -> Option<Action> {
+    Some(match c {
+        '1' => Action::FocusTree,
+        '2' => Action::FocusEditor,
+        '3' => Action::FocusAgent,
+        '0' => Action::ToggleTree,
+        'x' => Action::CommandPalette,
+        'o' => Action::QuickOpen,
+        'j' => Action::JumpToRef,
+        's' => Action::SendSelection,
+        'S' => Action::SendFile,
+        'e' => Action::Ask(Ask::Explain),
+        'F' => Action::FixProblem,
+        'n' => Action::NextAgent,
+        'g' => Action::Sessions,
+        'v' => Action::ToggleSplit,
+        'w' => Action::OtherAgentPane,
+        'r' => Action::ReviewChanges,
+        'a' => Action::AgentActivity,
+        'l' => Action::GoToSymbol,
+        'k' => Action::GoToProjectSymbol,
+        'i' => Action::Problems,
+        'z' => Action::Zoom,
+        '-' => Action::GoBack,
+        'q' => Action::Quit,
+        _ => return None,
+    })
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
+}
+
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |acc, (i, &b)| acc | (b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn b64() {
+        assert_eq!(base64(b"hello"), "aGVsbG8=");
+        assert_eq!(base64(b"hi!"), "aGkh");
+        assert_eq!(base64(b"h"), "aA==");
+    }
+
+    #[test]
+    fn global_keys_avoid_claude_bindings() {
+        for c in ['p', 't', 'b', 'f', 'm', 'O', '[', '\\'] {
+            assert!(global_action(c).is_none(), "Alt+{c} must reach the agent");
+        }
+    }
+}

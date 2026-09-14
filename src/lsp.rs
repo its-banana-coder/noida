@@ -1,0 +1,430 @@
+//! Minimal Language Server Protocol client: diagnostics, definition and
+//! references, with full-document sync.
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::Sender;
+
+use serde_json::{Value, json};
+
+use crate::events::Bg;
+use crate::symbols::Lang;
+
+pub enum LspEvent {
+    Message(usize, Value),
+    Exited(usize),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Diagnostic {
+    /// 0-based.
+    pub line: usize,
+    pub col: usize,
+    /// 1 = error, 2 = warning, 3 = info, 4 = hint.
+    pub severity: u8,
+    pub message: String,
+    pub source: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Request {
+    Definition,
+    References,
+}
+
+/// (path, 0-based line, 0-based UTF-16 column)
+pub type Location = (PathBuf, usize, usize);
+
+pub enum Response {
+    Locations(Request, Vec<Location>),
+    Diagnostics,
+    Ready(String),
+    None,
+}
+
+fn server_for(lang: Lang) -> Option<(&'static str, &'static [&'static str])> {
+    let candidates: &[(&str, &[&str])] = match lang {
+        Lang::Rust => &[("rust-analyzer", &[])],
+        Lang::TypeScript | Lang::Tsx | Lang::JavaScript => &[("typescript-language-server", &["--stdio"])],
+        Lang::Python => &[("pyright-langserver", &["--stdio"]), ("pylsp", &[])],
+        Lang::Go => &[("gopls", &[])],
+        Lang::Java => &[("jdtls", &[])],
+    };
+    candidates.iter().copied().find(|(bin, _)| on_path(bin))
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(program).is_file()))
+}
+
+fn language_id(lang: Lang) -> &'static str {
+    match lang {
+        Lang::Rust => "rust",
+        Lang::TypeScript => "typescript",
+        Lang::Tsx => "typescriptreact",
+        Lang::JavaScript => "javascript",
+        Lang::Python => "python",
+        Lang::Go => "go",
+        Lang::Java => "java",
+    }
+}
+
+pub fn uri(path: &Path) -> String {
+    let mut out = String::from("file://");
+    for b in path.to_string_lossy().bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+pub fn path_from_uri(uri: &str) -> Option<PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    let bytes = rest.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&rest[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    Some(PathBuf::from(String::from_utf8(out).ok()?))
+}
+
+struct Server {
+    name: String,
+    stdin: ChildStdin,
+    child: Child,
+    ready: bool,
+    next_id: u64,
+    pending: HashMap<u64, Request>,
+    /// Opened documents and their version.
+    open: HashMap<PathBuf, i32>,
+    queued: Vec<Value>,
+}
+
+impl Server {
+    fn send(&mut self, msg: &Value) {
+        let body = msg.to_string();
+        let _ = write!(self.stdin, "Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let _ = self.stdin.flush();
+    }
+
+    fn notify(&mut self, method: &str, params: Value) {
+        let msg = json!({"jsonrpc": "2.0", "method": method, "params": params});
+        if self.ready || method == "initialized" {
+            self.send(&msg);
+        } else {
+            self.queued.push(msg);
+        }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+pub struct Lsp {
+    root: PathBuf,
+    tx: Sender<Bg>,
+    servers: Vec<Server>,
+    by_lang: HashMap<Lang, Option<usize>>,
+    pub diagnostics: HashMap<PathBuf, Vec<Diagnostic>>,
+}
+
+impl Lsp {
+    pub fn new(root: PathBuf, tx: Sender<Bg>) -> Self {
+        Self { root, tx, servers: Vec::new(), by_lang: HashMap::new(), diagnostics: HashMap::new() }
+    }
+
+    pub fn server_name(&self, path: &Path) -> Option<&str> {
+        let lang = Lang::for_path(path)?;
+        let idx = (*self.by_lang.get(&lang)?)?;
+        Some(&self.servers[idx].name)
+    }
+
+    fn server(&mut self, lang: Lang) -> Option<usize> {
+        if let Some(idx) = self.by_lang.get(&lang) {
+            return *idx;
+        }
+        let idx = self.spawn(lang);
+        // TypeScript and JavaScript share one server.
+        if matches!(lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript) {
+            for l in [Lang::TypeScript, Lang::Tsx, Lang::JavaScript] {
+                self.by_lang.insert(l, idx);
+            }
+        }
+        self.by_lang.insert(lang, idx);
+        idx
+    }
+
+    fn spawn(&mut self, lang: Lang) -> Option<usize> {
+        let (bin, args) = server_for(lang)?;
+        let mut child = Command::new(bin)
+            .args(args)
+            .current_dir(&self.root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let stdin = child.stdin.take()?;
+        let stdout = child.stdout.take()?;
+        let idx = self.servers.len();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut len = 0usize;
+                loop {
+                    let mut header = String::new();
+                    match reader.read_line(&mut header) {
+                        Ok(0) | Err(_) => {
+                            let _ = tx.send(Bg::Lsp(LspEvent::Exited(idx)));
+                            return;
+                        }
+                        Ok(_) => {}
+                    }
+                    let header = header.trim();
+                    if header.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = header.strip_prefix("Content-Length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0; len];
+                if reader.read_exact(&mut body).is_err() {
+                    let _ = tx.send(Bg::Lsp(LspEvent::Exited(idx)));
+                    return;
+                }
+                if let Ok(v) = serde_json::from_slice::<Value>(&body) {
+                    if tx.send(Bg::Lsp(LspEvent::Message(idx, v))).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        let mut server = Server {
+            name: bin.to_string(),
+            stdin,
+            child,
+            ready: false,
+            next_id: 1,
+            pending: HashMap::new(),
+            open: HashMap::new(),
+            queued: Vec::new(),
+        };
+        let root_uri = uri(&self.root);
+        server.send(&json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "processId": std::process::id(),
+                "rootUri": root_uri,
+                "workspaceFolders": [{"uri": root_uri, "name": "root"}],
+                "capabilities": {
+                    "textDocument": {
+                        "synchronization": {"didSave": true},
+                        "publishDiagnostics": {"relatedInformation": false},
+                        "definition": {"linkSupport": true},
+                        "references": {}
+                    },
+                    "workspace": {"workspaceFolders": true, "configuration": true},
+                    "window": {"workDoneProgress": false}
+                }
+            }
+        }));
+        self.servers.push(server);
+        Some(idx)
+    }
+
+    pub fn did_open(&mut self, path: &Path, text: &str) {
+        let Some(lang) = Lang::for_path(path) else { return };
+        let Some(idx) = self.server(lang) else { return };
+        let s = &mut self.servers[idx];
+        if s.open.contains_key(path) {
+            return;
+        }
+        s.open.insert(path.to_path_buf(), 1);
+        s.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri(path), "languageId": language_id(lang), "version": 1, "text": text}}));
+    }
+
+    pub fn did_change(&mut self, path: &Path, text: &str) {
+        let Some(idx) = Lang::for_path(path).and_then(|l| self.by_lang.get(&l).copied().flatten()) else { return };
+        let s = &mut self.servers[idx];
+        let Some(version) = s.open.get_mut(path) else { return };
+        *version += 1;
+        let v = *version;
+        s.notify("textDocument/didChange", json!({"textDocument": {"uri": uri(path), "version": v}, "contentChanges": [{"text": text}]}));
+    }
+
+    pub fn did_save(&mut self, path: &Path) {
+        let Some(idx) = Lang::for_path(path).and_then(|l| self.by_lang.get(&l).copied().flatten()) else { return };
+        let s = &mut self.servers[idx];
+        if s.open.contains_key(path) {
+            s.notify("textDocument/didSave", json!({"textDocument": {"uri": uri(path)}}));
+        }
+    }
+
+    pub fn did_close(&mut self, path: &Path) {
+        let Some(idx) = Lang::for_path(path).and_then(|l| self.by_lang.get(&l).copied().flatten()) else { return };
+        let s = &mut self.servers[idx];
+        if s.open.remove(path).is_some() {
+            s.notify("textDocument/didClose", json!({"textDocument": {"uri": uri(path)}}));
+        }
+    }
+
+    /// Returns false when no ready server handles this file.
+    pub fn request(&mut self, kind: Request, path: &Path, line: usize, utf16_col: usize) -> bool {
+        let Some(idx) = Lang::for_path(path).and_then(|l| self.by_lang.get(&l).copied().flatten()) else { return false };
+        let s = &mut self.servers[idx];
+        if !s.ready || !s.open.contains_key(path) {
+            return false;
+        }
+        let id = s.next_id;
+        s.next_id += 1;
+        s.pending.insert(id, kind);
+        let (method, mut params) = match kind {
+            Request::Definition => ("textDocument/definition", json!({})),
+            Request::References => ("textDocument/references", json!({"context": {"includeDeclaration": true}})),
+        };
+        params["textDocument"] = json!({"uri": uri(path)});
+        params["position"] = json!({"line": line, "character": utf16_col});
+        s.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        true
+    }
+
+    pub fn handle(&mut self, ev: LspEvent) -> Response {
+        let (idx, msg) = match ev {
+            LspEvent::Exited(idx) => {
+                if let Some(s) = self.servers.get_mut(idx) {
+                    s.ready = false;
+                    s.open.clear();
+                }
+                self.by_lang.retain(|_, v| *v != Some(idx));
+                return Response::None;
+            }
+            LspEvent::Message(idx, msg) => (idx, msg),
+        };
+        let Some(s) = self.servers.get_mut(idx) else { return Response::None };
+
+        // Server → client requests need an answer or some servers stall.
+        if let (Some(id), Some(method)) = (msg.get("id"), msg["method"].as_str()) {
+            let result = match method {
+                "workspace/configuration" => {
+                    let n = msg["params"]["items"].as_array().map_or(0, Vec::len);
+                    Value::Array(vec![Value::Null; n])
+                }
+                "workspace/workspaceFolders" => json!([{"uri": uri(&self.root), "name": "root"}]),
+                _ => Value::Null,
+            };
+            s.send(&json!({"jsonrpc": "2.0", "id": id, "result": result}));
+            return Response::None;
+        }
+
+        if msg["method"] == "textDocument/publishDiagnostics" {
+            let Some(path) = msg["params"]["uri"].as_str().and_then(path_from_uri) else { return Response::None };
+            let diags: Vec<Diagnostic> = msg["params"]["diagnostics"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|d| Diagnostic {
+                            line: d["range"]["start"]["line"].as_u64().unwrap_or(0) as usize,
+                            col: d["range"]["start"]["character"].as_u64().unwrap_or(0) as usize,
+                            severity: d["severity"].as_u64().unwrap_or(1) as u8,
+                            message: d["message"].as_str().unwrap_or("").lines().next().unwrap_or("").to_string(),
+                            source: d["source"].as_str().unwrap_or("").to_string(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            if diags.is_empty() {
+                self.diagnostics.remove(&path);
+            } else {
+                self.diagnostics.insert(path.clone(), diags.clone());
+            }
+            return Response::Diagnostics;
+        }
+
+        let Some(id) = msg["id"].as_u64() else { return Response::None };
+        if id == 0 {
+            s.ready = true;
+            s.send(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}));
+            for m in std::mem::take(&mut s.queued) {
+                s.send(&m);
+            }
+            return Response::Ready(s.name.clone());
+        }
+        let Some(kind) = s.pending.remove(&id) else { return Response::None };
+        let result = &msg["result"];
+        let items: Vec<&Value> = match result {
+            Value::Array(a) => a.iter().collect(),
+            Value::Object(_) => vec![result],
+            _ => Vec::new(),
+        };
+        let locations = items
+            .into_iter()
+            .filter_map(|l| {
+                let uri = l["uri"].as_str().or(l["targetUri"].as_str())?;
+                let range = if l["targetSelectionRange"].is_object() { &l["targetSelectionRange"] } else { &l["range"] };
+                Some((
+                    path_from_uri(uri)?,
+                    range["start"]["line"].as_u64()? as usize,
+                    range["start"]["character"].as_u64()? as usize,
+                ))
+            })
+            .collect();
+        Response::Locations(kind, locations)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uris() {
+        let p = Path::new("/home/me/my project/a#b.rs");
+        assert_eq!(uri(p), "file:///home/me/my%20project/a%23b.rs");
+        assert_eq!(path_from_uri(&uri(p)).unwrap(), p);
+    }
+
+    /// Needs rust-analyzer on PATH: `cargo test lsp_live -- --ignored`.
+    #[test]
+    #[ignore]
+    fn lsp_live_rust_analyzer() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut lsp = Lsp::new(root.clone(), tx);
+        let file = root.join("src/theme.rs");
+        let text = std::fs::read_to_string(&file).unwrap() + "\nfn broken() -> u32 { \"no\" }\n";
+        lsp.did_open(&file, &text);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let mut got_ready = false;
+        while std::time::Instant::now() < deadline {
+            let Ok(Bg::Lsp(ev)) = rx.recv_timeout(std::time::Duration::from_secs(5)) else { continue };
+            match lsp.handle(ev) {
+                Response::Ready(_) => got_ready = true,
+                Response::Diagnostics if !lsp.diagnostics.is_empty() => {
+                    println!("{:?}", lsp.diagnostics);
+                    assert!(got_ready);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        panic!("no diagnostics");
+    }
+}

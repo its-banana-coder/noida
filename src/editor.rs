@@ -1,5 +1,6 @@
 //! A small, fast text editor buffer with syntax highlighting.
 
+use std::collections::HashMap;
 use std::io;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,8 @@ use syntect::highlighting::{
 use syntect::parsing::{ParseState, ScopeStack, SyntaxSet};
 use unicode_width::UnicodeWidthChar;
 
+use crate::git::LineMark;
+use crate::lsp::Diagnostic;
 use crate::theme;
 
 const TAB_WIDTH: usize = 4;
@@ -79,6 +82,13 @@ pub struct Doc {
     last_edit: Option<(EditKind, Instant)>,
     flash: Option<(usize, usize, Instant)>,
     pub syntax_name: String,
+    /// Bumped on every content change (edits, undo, reload); used for LSP sync.
+    pub edits: u64,
+    edited_at: Option<Instant>,
+    /// Git change markers per 0-based line.
+    pub marks: HashMap<usize, LineMark>,
+    /// Selections before each "expand selection", for shrinking back.
+    sel_stack: Vec<(Option<Pos>, Pos)>,
     hl_states: Vec<(ParseState, HighlightState)>,
     hl_lines: Vec<Vec<(Style, Range<usize>)>>,
     height: usize,
@@ -117,6 +127,10 @@ impl Doc {
             last_edit: None,
             flash: None,
             syntax_name: String::new(),
+            edits: 0,
+            edited_at: None,
+            marks: HashMap::new(),
+            sel_stack: Vec::new(),
             hl_states: Vec::new(),
             hl_lines: Vec::new(),
             height: 20,
@@ -232,6 +246,7 @@ impl Doc {
         let text = std::fs::read_to_string(&self.path).ok()?;
         self.push_undo(EditKind::Other);
         self.set_text(&text);
+        self.changed();
         self.invalidate(0);
         self.init_highlight(syntax);
         Some(format!("{name} reloaded (changed on disk)"))
@@ -269,10 +284,6 @@ impl Doc {
 
     pub fn cursor_col(&self) -> usize {
         self.cx + 1
-    }
-
-    pub fn line_count(&self) -> usize {
-        self.lines.len()
     }
 
     pub fn flash_active(&self) -> bool {
@@ -435,6 +446,7 @@ impl Doc {
         self.invalidate(0);
         self.dirty = true;
         self.reveal_cursor = true;
+        self.changed();
     }
 
     fn delete_range(&mut self, (sl, sc): Pos, (el, ec): Pos) {
@@ -553,7 +565,14 @@ impl Doc {
         self.after_edit();
     }
 
+    fn changed(&mut self) {
+        self.edits += 1;
+        self.edited_at = Some(Instant::now());
+        self.sel_stack.clear();
+    }
+
     fn after_edit(&mut self) {
+        self.changed();
         self.dirty = true;
         self.want_col = None;
         self.reveal_cursor = true;
@@ -693,6 +712,104 @@ impl Doc {
         KeyResult::Handled
     }
 
+    // ---- structure-aware helpers ----
+
+    pub fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    pub fn edited_at(&self) -> Option<Instant> {
+        self.edited_at
+    }
+
+    fn byte_of(&self, (line, cx): Pos) -> usize {
+        self.lines[..line].iter().map(|l| l.len() + 1).sum::<usize>() + self.byte_idx(line, cx)
+    }
+
+    fn pos_of_byte(&self, mut b: usize) -> Pos {
+        for (i, l) in self.lines.iter().enumerate() {
+            if b <= l.len() {
+                let cx = l.get(..b).map_or(l.chars().count(), |s| s.chars().count());
+                return (i, cx);
+            }
+            b -= l.len() + 1;
+        }
+        let last = self.lines.len() - 1;
+        (last, self.line_chars(last))
+    }
+
+    /// Byte range of the selection (or the empty range at the cursor).
+    pub fn selection_bytes(&self) -> (usize, usize) {
+        match self.selection() {
+            Some((s, e)) => (self.byte_of(s), self.byte_of(e)),
+            None => {
+                let b = self.byte_of((self.cy, self.cx));
+                (b, b)
+            }
+        }
+    }
+
+    /// Select a byte range, remembering the previous selection for `shrink_selection`.
+    pub fn expand_to(&mut self, (start, end): (usize, usize)) {
+        self.sel_stack.push((self.anchor, (self.cy, self.cx)));
+        self.anchor = Some(self.pos_of_byte(start));
+        (self.cy, self.cx) = self.pos_of_byte(end);
+        self.reveal_cursor = true;
+    }
+
+    pub fn shrink_selection(&mut self) -> bool {
+        match self.sel_stack.pop() {
+            Some((anchor, cursor)) => {
+                self.anchor = anchor;
+                (self.cy, self.cx) = cursor;
+                self.reveal_cursor = true;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Identifier under (or just before) the cursor.
+    pub fn word_at_cursor(&self) -> Option<String> {
+        let chars: Vec<char> = self.lines[self.cy].chars().collect();
+        let mut s = self.cx.min(chars.len());
+        if (s == chars.len() || !is_word(chars[s])) && s > 0 && is_word(chars[s - 1]) {
+            s -= 1;
+        }
+        if s >= chars.len() || !is_word(chars[s]) {
+            return None;
+        }
+        let mut e = s;
+        while s > 0 && is_word(chars[s - 1]) {
+            s -= 1;
+        }
+        while e < chars.len() && is_word(chars[e]) {
+            e += 1;
+        }
+        Some(chars[s..e].iter().collect())
+    }
+
+    /// Cursor column in UTF-16 code units, as LSP expects.
+    pub fn utf16_col(&self) -> usize {
+        self.lines[self.cy].chars().take(self.cx).map(char::len_utf16).sum()
+    }
+
+    pub fn char_col_from_utf16(&self, line: usize, utf16: usize) -> usize {
+        let Some(l) = self.lines.get(line) else { return 0 };
+        let mut units = 0;
+        for (i, c) in l.chars().enumerate() {
+            if units >= utf16 {
+                return i;
+            }
+            units += c.len_utf16();
+        }
+        l.chars().count()
+    }
+
+    pub fn cursor_line0(&self) -> usize {
+        self.cy
+    }
+
     // ---- mouse ----
 
     fn pos_at(&self, area: Rect, x: u16, y: u16) -> Pos {
@@ -720,7 +837,7 @@ impl Doc {
 
     // ---- rendering ----
 
-    pub fn render(&mut self, area: Rect, buf: &mut Buffer, focused: bool, syntax: &Syntax) -> Option<(u16, u16)> {
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer, focused: bool, syntax: &Syntax, diags: &[Diagnostic]) -> Option<(u16, u16)> {
         let digits = self.lines.len().to_string().len().max(3);
         self.gutter = digits as u16 + 2;
         self.height = area.height as usize;
@@ -770,6 +887,18 @@ impl Doc {
             }
             let num_style = if li == self.cy { Style::default().fg(theme::ACCENT) } else { Style::default().fg(theme::DIM) };
             buf.set_string(area.x, y, format!("{:>digits$}  ", li + 1), num_style);
+            if let Some(d) = diags.iter().filter(|d| d.line == li).min_by_key(|d| d.severity) {
+                let color = if d.severity <= 1 { theme::ERROR } else if d.severity == 2 { theme::ACCENT } else { theme::DIM };
+                buf.set_string(area.x + digits as u16, y, "●", Style::default().fg(color));
+            }
+            if let Some(mark) = self.marks.get(&li) {
+                let (sym, color) = match mark {
+                    LineMark::Added => ("▎", theme::ADDED),
+                    LineMark::Modified => ("▎", theme::DIR),
+                    LineMark::DeletedBelow => ("▁", theme::ERROR),
+                };
+                buf.set_string(area.x + digits as u16 + 1, y, sym, Style::default().fg(color));
+            }
 
             let spans = self.hl_lines.get(li);
             let mut span_i = 0;

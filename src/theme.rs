@@ -16,3 +16,6 @@ pub const HINT_BG: Color = Color::Rgb(0xf9, 0xe2, 0xaf);
 pub const HINT_FG: Color = Color::Rgb(0x11, 0x11, 0x1b);
 pub const STATUS_BG: Color = Color::Rgb(0x18, 0x18, 0x25);
 pub const ERROR: Color = Color::Rgb(0xf3, 0x8b, 0xa8);
+pub const ADDED: Color = Color::Rgb(0xa6, 0xe3, 0xa1);
+pub const REMOVED_BG: Color = Color::Rgb(0x3b, 0x24, 0x2d);
+pub const ADDED_BG: Color = Color::Rgb(0x24, 0x36, 0x2b);
