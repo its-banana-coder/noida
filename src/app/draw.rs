@@ -324,6 +324,11 @@ impl App {
                 };
                 (format!("{label}: {input}▏"), theme::ACCENT(), false)
             }
+            Mode::Normal if self.leader => (
+                "Ctrl+] … press a shortcut key: x commands · o open · j jump · g sessions · s send · e ask · r review · / search · 1/2/3 focus · Esc cancel".into(),
+                theme::ACCENT(),
+                true,
+            ),
             Mode::Normal => match (&self.message, &self.banner) {
                 (Some((m, _, err)), _) => (m.clone(), if *err { theme::ERROR() } else { theme::ACCENT() }, false),
                 (None, Some(b)) => (b.text.clone(), if b.error { theme::ERROR() } else { theme::ADDED() }, true),

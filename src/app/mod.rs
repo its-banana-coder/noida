@@ -157,6 +157,7 @@ pub struct App {
     organize_pending: bool,
     pending_format: Option<PathBuf>,
     last_cursor: Option<(u16, u16)>,
+    leader: bool,
     tx: Sender<Bg>,
     file_index: Arc<FileIndex>,
     index_built: Option<Instant>,
@@ -236,6 +237,7 @@ impl App {
             organize_pending: false,
             pending_format: None,
             last_cursor: None,
+            leader: false,
             file_index: Arc::default(),
             index_built: None,
             index_building: false,
@@ -789,6 +791,33 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) {
+        // Leader key: Ctrl+] then a key acts like Alt+key. Works on macOS
+        // terminals where Option types characters instead of sending Alt.
+        let is_leader = key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char(']' | '5'));
+        if self.leader {
+            self.leader = false;
+            if is_leader {
+                if self.focus == Focus::Agent {
+                    if let Some(a) = self.agent() {
+                        a.write(&[0x1d]);
+                    }
+                }
+                return;
+            }
+            if key.code == KeyCode::Esc {
+                return;
+            }
+            let mut modifiers = key.modifiers | KeyModifiers::ALT;
+            modifiers.remove(KeyModifiers::CONTROL);
+            if matches!(key.code, KeyCode::Char(_)) {
+                modifiers = modifiers - KeyModifiers::SHIFT;
+            }
+            return self.on_key(KeyEvent::new(key.code, modifiers));
+        }
+        if is_leader && matches!(self.mode, Mode::Normal) {
+            self.leader = true;
+            return;
+        }
         if !matches!(self.mode, Mode::Normal) {
             return self.on_mode_key(key);
         }

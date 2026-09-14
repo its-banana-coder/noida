@@ -81,7 +81,8 @@ noida --fresh               # don't restore the last session
 noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 ```
 
-> Use a terminal with truecolor and mouse support: Windows Terminal, iTerm2, WezTerm, kitty, Alacritty or GNOME Terminal. In tmux, run `set -g mouse on`.
+> Use a terminal with truecolor and mouse support: iTerm2, Ghostty, WezTerm, kitty, Alacritty, Windows Terminal or GNOME Terminal. In tmux, run `set -g mouse on`.
+> **On a Mac, read [macOS: Option as Alt](#-macos-option-as-alt) first.**
 > For code intelligence, install a language server, e.g. `rustup component add rust-analyzer` or `npm i -g typescript-language-server typescript`.
 
 ---
@@ -162,7 +163,29 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 
 ## ⌨️ Keybindings
 
-Global shortcuts use **Alt**, so ordinary keys still reach your agent, and they avoid Claude Code's own Meta bindings. **`Alt+x` lists every command with its shortcut.**
+Global shortcuts use **Alt** (**⌥ Option** on a Mac), so ordinary keys still reach your agent, and they avoid Claude Code's own Meta bindings. **`Alt+x` lists every command with its shortcut.**
+
+> **No Alt key working?** Every `Alt+key` shortcut also works as **`Ctrl+]` then `key`**, in any terminal and on any keyboard layout. For example `Ctrl+]` `x` opens the command palette. Press `Ctrl+]` twice to send it to the agent.
+
+### 🍎 macOS: Option as Alt
+
+By default, Mac terminals use Option to type special characters (`⌥x` types `≈`), so NOIDA never sees the shortcut. Claude Code's own Option shortcuts need the same setting. Either use the **`Ctrl+]` leader** above, or turn on Option-as-Meta in your terminal:
+
+| Terminal | Setting |
+|---|---|
+| **iTerm2** | Settings → Profiles → Keys → *Left Option key* → **Esc+** |
+| **Terminal.app** | Settings → Profiles → Keyboard → **Use Option as Meta key** (Terminal.app lacks truecolor, so iTerm2, Ghostty or WezTerm look better) |
+| **Ghostty** | `macos-option-as-alt = true` in the config |
+| **WezTerm** | Works by default with the left Option key; for both, set `send_composed_key_when_right_alt_is_pressed = false` |
+| **kitty** | `macos_option_as_alt yes` in `kitty.conf` |
+| **Alacritty** | `[window] option_as_alt = "Both"` in `alacritty.toml` |
+| **VS Code terminal** | `"terminal.integrated.macOptionIsMeta": true` |
+
+Also on a Mac:
+- `Ctrl` shortcuts (`Ctrl+S`, `Ctrl+F`, `Ctrl+D`…) use **Control**, not ⌘ Command. Terminals don't pass ⌘ shortcuts to apps.
+- Some terminals use `⌥+click` for their own selection. If `Alt+click` doesn't add a cursor, use `Ctrl+D` or `Ctrl+Alt+↑/↓` instead.
+- `F2`, `F3` and `F12` may need the **fn** key.
+
 
 | Key | Action | Key | Action |
 |---|---|---|---|
