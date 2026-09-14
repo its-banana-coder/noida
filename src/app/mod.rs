@@ -1,6 +1,7 @@
 //! Top-level application state, input routing and command dispatch.
 
 mod draw;
+mod findbar;
 mod views;
 
 use std::collections::{HashMap, HashSet};
@@ -15,7 +16,8 @@ use ratatui::layout::Rect;
 use crate::actions::{Action, AgentKind, Ask};
 use crate::activity::{Activity, Notice, Turn};
 use crate::agent::{Agent, HINT_KEYS, hint_label};
-use crate::editor::{Doc, KeyResult, Syntax};
+use crate::editor::{Click, Doc, KeyResult, SearchOpts, Syntax};
+use crate::settings::{self, Settings};
 use crate::events::Bg;
 use crate::git::{self, Repo};
 use crate::hooks::{self, AgentEvent};
@@ -27,6 +29,7 @@ use crate::symbols::{self, ProjectSymbols};
 use crate::tree::{Activate, Tree};
 use crate::workspace::{self, AgentState, DocState, Workspace};
 
+use findbar::{FindBar, FindResult};
 use views::{ActivityView, ReviewView, ViewResult};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,12 +44,12 @@ enum Mode {
     Hints { typed: String },
     Picker(Picker),
     Prompt { kind: PromptKind, input: String },
+    Find(FindBar),
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum PromptKind {
     GotoLine,
-    Find,
     NewBranch,
     Commit,
     WorktreeName(AgentKind),
@@ -125,7 +128,8 @@ pub struct App {
     banner: Option<Banner>,
     back: Vec<Loc>,
     forward: Vec<Loc>,
-    last_find: String,
+    last_search: Option<(String, SearchOpts)>,
+    settings: Settings,
     tx: Sender<Bg>,
     file_index: Arc<FileIndex>,
     index_built: Option<Instant>,
@@ -190,7 +194,8 @@ impl App {
             banner: None,
             back: Vec::new(),
             forward: Vec::new(),
-            last_find: String::new(),
+            last_search: None,
+            settings: Settings::default(),
             file_index: Arc::default(),
             index_built: None,
             index_building: false,
@@ -219,6 +224,10 @@ impl App {
             root,
         };
         app.rebuild_index();
+        match settings::load() {
+            Ok(s) => app.settings = s,
+            Err(e) => app.error(e),
+        }
 
         let agent_specs = opts.agents.is_some();
         if let Some(specs) = opts.agents {
@@ -691,6 +700,13 @@ impl App {
                 }
             }
             Mode::Prompt { input, .. } => input.push_str(text.trim()),
+            Mode::Find(bar) => {
+                bar.paste(text);
+                let (q, o) = (bar.query.clone(), bar.opts);
+                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    doc.set_search(&q, o);
+                }
+            }
             _ => match self.focus {
                 Focus::Agent => {
                     if let Some(a) = self.agent() {
@@ -836,7 +852,15 @@ impl App {
         match key.code {
             KeyCode::Char('g') if ctrl => return self.run(Action::GoToLine),
             KeyCode::Char('f') if ctrl => return self.run(Action::Find),
+            KeyCode::Char('h') if ctrl => return self.run(Action::FindReplace),
+            KeyCode::F(3) if shift => return self.find_step(false),
             KeyCode::F(3) => return self.run(Action::FindNext),
+            KeyCode::Esc if self.doc().is_some_and(|d| d.search.is_some() && d.cursor_count() == 1 && !d.has_selection()) => {
+                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    doc.clear_search();
+                }
+                return;
+            }
             KeyCode::F(12) if shift => return self.run(Action::FindReferences),
             KeyCode::F(12) => return self.run(Action::GoToDefinition),
             KeyCode::Char('w') if ctrl => return self.run(Action::CloseFile),
@@ -927,6 +951,7 @@ impl App {
                 }
                 Outcome::None => self.mode = Mode::Picker(p),
             },
+            Mode::Find(bar) => self.on_find_key(bar, key),
             Mode::Prompt { kind, mut input } => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_prompt(kind, input),
@@ -951,10 +976,6 @@ impl App {
                     doc.goto(line, parts.next().flatten(), None);
                 }
             }
-            PromptKind::Find => {
-                let q = if input.is_empty() { self.last_find.clone() } else { input };
-                self.find(&q);
-            }
             PromptKind::NewBranch => self.git_op(|r| r.create_branch(input.trim()).map(|_| format!("switched to new branch {}", input.trim()))),
             PromptKind::Commit => {
                 if input.trim().is_empty() {
@@ -976,15 +997,79 @@ impl App {
         self.last_disk_check = Instant::now() - Duration::from_secs(1);
     }
 
-    fn find(&mut self, query: &str) {
-        if query.is_empty() {
-            return;
+    fn open_find(&mut self, replace: bool) {
+        let Some(doc) = self.doc() else { return self.info("open a file first") };
+        let selected = doc.selected_text().filter(|t| !t.contains('\n') && doc.cursor_count() == 1);
+        let (query, opts) = match (selected, &self.last_search) {
+            (Some(t), Some((_, o))) => (t, *o),
+            (Some(t), None) => (t, SearchOpts::default()),
+            (None, Some((q, o))) => (q.clone(), *o),
+            (None, None) => (String::new(), SearchOpts::default()),
+        };
+        // In-selection search makes sense when a multi-line selection exists.
+        let multi_line = doc.has_selection() && doc.selected_lines().0 != doc.selected_lines().1;
+        let opts = SearchOpts { in_selection: multi_line, ..opts };
+        let mut bar = FindBar::new(query.clone(), opts, replace);
+        if replace && !query.is_empty() {
+            bar.focus_replace();
         }
-        self.last_find = query.to_string();
+        if let Some(doc) = self.docs.get_mut(self.active_doc) {
+            doc.set_search(&query, opts);
+        }
+        self.view = None;
+        self.focus = Focus::Editor;
+        self.mode = Mode::Find(bar);
+    }
+
+    fn find_step(&mut self, forward: bool) {
+        let last = self.last_search.clone();
         let Some(doc) = self.docs.get_mut(self.active_doc) else { return };
-        if !doc.find(query) {
-            self.error(format!("not found: {query}"));
+        if doc.search.is_none() {
+            match last {
+                Some((q, o)) => doc.set_search(&q, o),
+                None => return self.open_find(false),
+            }
         }
+        if !doc.find_step(forward) {
+            self.error("no matches");
+        }
+    }
+
+    fn on_find_key(&mut self, mut bar: FindBar, key: KeyEvent) {
+        let result = bar.handle_key(key);
+        let (query, opts, replacement) = (bar.query.clone(), bar.opts, bar.replace.clone());
+        let Some(doc) = self.docs.get_mut(self.active_doc) else { return };
+        match result {
+            FindResult::Close => {
+                if !query.is_empty() {
+                    self.last_search = Some((query, opts));
+                }
+                return;
+            }
+            FindResult::Changed => doc.set_search(&query, opts),
+            FindResult::Next => {
+                doc.find_step(true);
+            }
+            FindResult::Prev => {
+                doc.find_step(false);
+            }
+            FindResult::ReplaceOne => {
+                doc.replace_current(&replacement);
+            }
+            FindResult::ReplaceAll => {
+                let n = doc.replace_all(&replacement);
+                self.info(format!("replaced {n} occurrences"));
+            }
+            FindResult::SelectAll => {
+                let n = doc.select_all_matches();
+                self.info(format!("{n} cursors"));
+                self.last_search = Some((query, opts));
+                return;
+            }
+            FindResult::None => {}
+        }
+        self.last_search = Some((bar.query.clone(), bar.opts));
+        self.mode = Mode::Find(bar);
     }
 
     fn on_mouse(&mut self, m: MouseEvent) {
@@ -1001,7 +1086,7 @@ impl App {
 
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if !matches!(self.mode, Mode::Normal) {
+                if !matches!(self.mode, Mode::Normal | Mode::Find(_)) {
                     self.mode = Mode::Normal;
                 }
                 let title_slot = (0..2).find(|&s| agent_blocks[s].width > 0 && y == agent_blocks[s].y && inside(agent_blocks[s]));
@@ -1046,10 +1131,14 @@ impl App {
                         }
                         None => {
                             if let Some(doc) = self.docs.get_mut(self.active_doc) {
-                                doc.click(editor, x, y, m.modifiers.contains(KeyModifiers::SHIFT));
-                                self.drag = Drag::Editor;
-                                if m.modifiers.contains(KeyModifiers::CONTROL) {
-                                    self.run(Action::GoToDefinition);
+                                let alt = m.modifiers.contains(KeyModifiers::ALT);
+                                let shift = m.modifiers.contains(KeyModifiers::SHIFT);
+                                let click = doc.click(x, y, shift && !alt, alt && !shift);
+                                if matches!(click, Click::Text) {
+                                    self.drag = Drag::Editor;
+                                    if m.modifiers.contains(KeyModifiers::CONTROL) {
+                                        self.run(Action::GoToDefinition);
+                                    }
                                 }
                             }
                         }
@@ -1077,7 +1166,8 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) => match self.drag {
                 Drag::Editor => {
                     if let Some(doc) = self.docs.get_mut(self.active_doc) {
-                        doc.drag(editor, x, y);
+                        let column = m.modifiers.contains(KeyModifiers::ALT);
+                        doc.drag(x, y, column);
                     }
                 }
                 Drag::AgentDivider if main.width > 0 => {
@@ -1166,10 +1256,74 @@ impl App {
                 self.update_quick_open();
             }
             Action::GoToLine => self.mode = Mode::Prompt { kind: PromptKind::GotoLine, input: String::new() },
-            Action::Find => self.mode = Mode::Prompt { kind: PromptKind::Find, input: String::new() },
-            Action::FindNext => {
-                let q = self.last_find.clone();
-                self.find(&q);
+            Action::Find => self.open_find(false),
+            Action::FindReplace => self.open_find(true),
+            Action::FindNext => self.find_step(true),
+            Action::FindPrev => self.find_step(false),
+            Action::ToggleWordWrap => {
+                self.settings.word_wrap = !self.settings.word_wrap;
+                let wrap = self.settings.word_wrap;
+                for d in &mut self.docs {
+                    d.wrap = wrap;
+                }
+                self.info(if wrap { "word wrap on" } else { "word wrap off" });
+            }
+            Action::Fold | Action::Unfold => {
+                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    let line = doc.cursor_line0();
+                    let folded = doc.is_folded(line);
+                    if (action == Action::Fold) != folded || action == Action::Fold {
+                        doc.toggle_fold(line);
+                    }
+                }
+            }
+            Action::FoldAll => {
+                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    doc.fold_all();
+                }
+            }
+            Action::UnfoldAll => {
+                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    doc.unfold_all();
+                }
+            }
+            Action::ToggleComment => {
+                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    if !doc.toggle_comment() {
+                        self.info("no comment syntax known for this file type");
+                    }
+                }
+            }
+            Action::SelectAllOccurrences => {
+                let Some(doc) = self.docs.get_mut(self.active_doc) else { return };
+                let (query, word) = match doc.selected_text() {
+                    Some(t) if !t.contains('\n') => (t, false),
+                    _ => match doc.word_at_cursor() {
+                        Some(w) => (w, true),
+                        None => return,
+                    },
+                };
+                doc.set_search(&query, SearchOpts { case: true, word, ..Default::default() });
+                let n = doc.select_all_matches();
+                doc.clear_search();
+                self.info(format!("{n} cursors"));
+            }
+            Action::AddCursorAbove | Action::AddCursorBelow => {
+                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    doc.add_cursor_vertical(action == Action::AddCursorBelow);
+                }
+            }
+            Action::OpenSettings => {
+                match settings::ensure_file() {
+                    Some(p) => self.open_path(&p, None),
+                    None => self.error("cannot locate the config directory"),
+                }
+                self.focus = Focus::Editor;
+            }
+            Action::ToggleTheme => {
+                self.settings.theme = if crate::theme::is_light() { "dark".into() } else { "light".into() };
+                settings::apply(&self.settings);
+                self.info(format!("theme: {}", self.settings.theme));
             }
             Action::Save => self.editor_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
             Action::SaveAll => {
@@ -1733,7 +1887,8 @@ impl App {
         let idx = match self.docs.iter().position(|d| d.path == path) {
             Some(i) => i,
             None => match Doc::open(path, &self.syntax) {
-                Ok(doc) => {
+                Ok(mut doc) => {
+                    doc.wrap = self.settings.word_wrap;
                     self.lsp.did_open(&doc.path, &doc.text());
                     self.lsp_synced.insert(doc.path.clone(), doc.edits);
                     self.docs.push(doc);

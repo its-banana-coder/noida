@@ -323,12 +323,12 @@ mod tests {
     #[test]
     fn partial_paths() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let refs = scan("bug in editor.rs:88, see agent.rs around line 12; e.g. claude.ai", root);
+        let refs = scan("bug in tree.rs:88, see agent.rs around line 12; e.g. claude.ai", root);
         let got: Vec<_> = refs
             .iter()
             .map(|r| (relative(root, &r.path).to_string(), r.line, r.ambiguous.is_some()))
             .collect();
-        assert_eq!(got, vec![("src/editor.rs".into(), Some(88), false), ("src/agent.rs".into(), Some(12), false)]);
+        assert_eq!(got, vec![("src/tree.rs".into(), Some(88), false), ("src/agent.rs".into(), Some(12), false)]);
 
         let mut index = FileIndex::default();
         for (i, f) in ["a/index.ts", "b/index.ts", "xindex.ts"].iter().enumerate() {

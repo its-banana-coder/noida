@@ -10,6 +10,7 @@ mod lsp;
 mod picker;
 mod refs;
 mod sessions;
+mod settings;
 mod symbols;
 mod theme;
 mod tree;

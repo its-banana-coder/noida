@@ -182,11 +182,11 @@ impl Picker {
         let h = (self.shown.len() as u16 + 3).clamp(4, (area.height * 3 / 5).max(4));
         let popup = Rect::new(area.x + (area.width - w) / 2, area.y + area.height / 8, w, h.min(area.height));
         Clear.render(popup, buf);
-        buf.set_style(popup, Style::default().bg(theme::STATUS_BG));
+        buf.set_style(popup, Style::default().bg(theme::STATUS_BG()));
         let count = format!(" {} ", self.shown.len());
         Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme::BORDER_FOCUS))
+            .border_style(Style::default().fg(theme::BORDER_FOCUS()))
             .title(format!(" {} ", self.title))
             .title_bottom(ratatui::text::Line::from(count).right_aligned())
             .render(popup, buf);
@@ -194,7 +194,7 @@ impl Picker {
         if body.width < 4 || body.height == 0 {
             return (popup.x, popup.y);
         }
-        buf.set_stringn(body.x, body.y, format!("› {}", self.query), body.width as usize, Style::default().fg(theme::FG));
+        buf.set_stringn(body.x, body.y, format!("› {}", self.query), body.width as usize, Style::default().fg(theme::FG()));
         let list_h = body.height.saturating_sub(1) as usize;
         let offset = self.selected.saturating_sub(list_h.saturating_sub(1));
         for (row, &i) in self.shown.iter().skip(offset).take(list_h).enumerate() {
@@ -202,9 +202,9 @@ impl Picker {
             let y = body.y + 1 + row as u16;
             let selected = offset + row == self.selected;
             let base = if selected {
-                Style::default().fg(theme::HINT_FG).bg(theme::BORDER_FOCUS)
+                Style::default().fg(theme::HINT_FG()).bg(theme::BORDER_FOCUS())
             } else {
-                Style::default().fg(theme::FG)
+                Style::default().fg(theme::FG())
             };
             if selected {
                 buf.set_style(Rect::new(body.x, y, body.width, 1), base);
@@ -213,16 +213,16 @@ impl Picker {
             let text_end = body.x + body.width.saturating_sub(hint_w + 1);
             let (x, _) = buf.set_stringn(body.x + 1, y, &item.label, (text_end.saturating_sub(body.x + 1)) as usize, base.add_modifier(Modifier::BOLD));
             if !item.detail.is_empty() && x + 1 < text_end {
-                let dim = if selected { base } else { Style::default().fg(theme::DIM) };
+                let dim = if selected { base } else { Style::default().fg(theme::DIM()) };
                 buf.set_stringn(x + 1, y, &item.detail, (text_end - x - 1) as usize, dim);
             }
             if hint_w > 0 && hint_w + 2 < body.width {
-                let dim = if selected { base } else { Style::default().fg(theme::DIM) };
+                let dim = if selected { base } else { Style::default().fg(theme::DIM()) };
                 buf.set_string(body.x + body.width - hint_w, y, &item.hint, dim);
             }
         }
         if self.shown.is_empty() && body.height > 1 {
-            buf.set_string(body.x + 1, body.y + 1, "no matches", Style::default().fg(theme::DIM));
+            buf.set_string(body.x + 1, body.y + 1, "no matches", Style::default().fg(theme::DIM()));
         }
         (body.x + 2 + self.query.chars().count() as u16, body.y)
     }

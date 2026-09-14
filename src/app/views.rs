@@ -219,7 +219,7 @@ impl ReviewView {
         self.area = area;
         self.height = area.height as usize;
         if self.files.is_empty() {
-            buf.set_string(area.x + 2, area.y + 1, "No unstaged changes. Everything is accepted.", Style::default().fg(theme::DIM));
+            buf.set_string(area.x + 2, area.y + 1, "No unstaged changes. Everything is accepted.", Style::default().fg(theme::DIM()));
             return;
         }
         let sel = self.targets.get(self.selected).copied();
@@ -233,19 +233,19 @@ impl ReviewView {
                     let (add, del) = f.counts();
                     let selected = sel == Some((*fi, None));
                     let tag = if f.untracked { "new" } else if f.binary { "binary" } else { "" };
-                    let style = Style::default().fg(theme::FG).bg(if selected { theme::SELECT } else { theme::STATUS_BG }).add_modifier(Modifier::BOLD);
+                    let style = Style::default().fg(theme::FG()).bg(if selected { theme::SELECT() } else { theme::STATUS_BG() }).add_modifier(Modifier::BOLD);
                     buf.set_style(full, style);
                     let (x, _) = buf.set_stringn(area.x + 1, y, &f.path, w.saturating_sub(16), style);
-                    buf.set_string(x + 2, y, format!("+{add}"), style.fg(theme::ADDED));
-                    buf.set_string(x + 4 + add.to_string().len() as u16, y, format!("-{del} {tag}"), style.fg(theme::ERROR));
+                    buf.set_string(x + 2, y, format!("+{add}"), style.fg(theme::ADDED()));
+                    buf.set_string(x + 4 + add.to_string().len() as u16, y, format!("-{del} {tag}"), style.fg(theme::ERROR()));
                 }
                 Row::Hunk(fi, hi) => {
                     let selected = sel == Some((*fi, Some(*hi)));
                     let h = &self.files[*fi].hunks[*hi];
                     let style = if selected {
-                        Style::default().fg(theme::HINT_FG).bg(theme::BORDER_FOCUS)
+                        Style::default().fg(theme::HINT_FG()).bg(theme::BORDER_FOCUS())
                     } else {
-                        Style::default().fg(theme::DIR)
+                        Style::default().fg(theme::DIR())
                     };
                     if selected {
                         buf.set_style(full, style);
@@ -256,15 +256,15 @@ impl ReviewView {
                     let text = &self.files[*fi].hunks[*hi].lines[*li];
                     let selected = sel == Some((*fi, Some(*hi)));
                     let (fg, bg) = match text.chars().next() {
-                        Some('+') => (theme::ADDED, Some(theme::ADDED_BG)),
-                        Some('-') => (theme::ERROR, Some(theme::REMOVED_BG)),
-                        _ => (theme::FG, None),
+                        Some('+') => (theme::ADDED(), Some(theme::ADDED_BG())),
+                        Some('-') => (theme::ERROR(), Some(theme::REMOVED_BG())),
+                        _ => (theme::FG(), None),
                     };
                     if let Some(bg) = bg {
                         buf.set_style(full, Style::default().bg(bg));
                     }
                     let bar = if selected { "▌" } else { " " };
-                    buf.set_string(area.x, y, bar, Style::default().fg(theme::BORDER_FOCUS));
+                    buf.set_string(area.x, y, bar, Style::default().fg(theme::BORDER_FOCUS()));
                     let display = text.replace('\t', "    ");
                     buf.set_stringn(area.x + 1, y, display, w.saturating_sub(1), Style::default().fg(fg));
                 }
@@ -297,15 +297,15 @@ impl ActivityView {
     pub fn set_turns(&mut self, turns: Vec<Turn>) {
         self.turns = turns;
         self.rows.clear();
-        let dim = Style::default().fg(theme::DIM);
+        let dim = Style::default().fg(theme::DIM());
         for (ti, t) in self.turns.iter().enumerate().rev() {
             let status = if t.ended.is_some() { "✓" } else { "⠿" };
             let head = format!("{status} {}  {}  {}", t.agent, clock(t.started), if t.prompt.is_empty() { "(no prompt)" } else { &t.prompt });
-            self.rows.push((head, Style::default().fg(theme::FG).add_modifier(Modifier::BOLD).bg(theme::STATUS_BG), None, Some(ti)));
+            self.rows.push((head, Style::default().fg(theme::FG()).add_modifier(Modifier::BOLD).bg(theme::STATUS_BG()), None, Some(ti)));
             let mut groups: Vec<(&str, Vec<String>, ratatui::style::Color)> = Vec::new();
-            groups.push(("Modified", t.edited.iter().cloned().collect(), theme::ACCENT));
-            groups.push(("Created", t.created.iter().cloned().collect(), theme::ADDED));
-            groups.push(("Read", t.read.iter().cloned().collect(), theme::LINK));
+            groups.push(("Modified", t.edited.iter().cloned().collect(), theme::ACCENT()));
+            groups.push(("Created", t.created.iter().cloned().collect(), theme::ADDED()));
+            groups.push(("Read", t.read.iter().cloned().collect(), theme::LINK()));
             for (label, files, color) in groups {
                 if files.is_empty() {
                     continue;
@@ -318,19 +318,19 @@ impl ActivityView {
             if !t.commands.is_empty() {
                 self.rows.push((format!("  Commands ({})", t.commands.len()), dim, None, Some(ti)));
                 for c in &t.commands {
-                    self.rows.push((format!("    $ {c}"), Style::default().fg(theme::FG), None, Some(ti)));
+                    self.rows.push((format!("    $ {c}"), Style::default().fg(theme::FG()), None, Some(ti)));
                 }
             }
             self.rows.push(("  Timeline".into(), dim, None, Some(ti)));
             for e in &t.entries {
                 let color = match e.kind {
-                    EntryKind::Prompt => theme::BORDER_FOCUS,
-                    EntryKind::Edit => theme::ACCENT,
-                    EntryKind::Create => theme::ADDED,
-                    EntryKind::Permission => theme::ERROR,
-                    EntryKind::Finished => theme::ADDED,
-                    EntryKind::Command => theme::FG,
-                    _ => theme::DIM,
+                    EntryKind::Prompt => theme::BORDER_FOCUS(),
+                    EntryKind::Edit => theme::ACCENT(),
+                    EntryKind::Create => theme::ADDED(),
+                    EntryKind::Permission => theme::ERROR(),
+                    EntryKind::Finished => theme::ADDED(),
+                    EntryKind::Command => theme::FG(),
+                    _ => theme::DIM(),
                 };
                 let text: String = e.text.split_whitespace().collect::<Vec<_>>().join(" ");
                 self.rows.push((format!("    {}  {text}", clock(e.at)), Style::default().fg(color), e.path.clone(), Some(ti)));
@@ -396,17 +396,17 @@ impl ActivityView {
         self.height = area.height as usize;
         if self.rows.is_empty() {
             let msg = "No agent activity yet. Agents started by NOIDA report reads, edits and commands here.";
-            buf.set_stringn(area.x + 2, area.y + 1, msg, area.width as usize, Style::default().fg(theme::DIM));
+            buf.set_stringn(area.x + 2, area.y + 1, msg, area.width as usize, Style::default().fg(theme::DIM()));
             return;
         }
         for (i, (text, style, _, _)) in self.rows.iter().enumerate().skip(self.scroll).take(self.height) {
             let y = area.y + (i - self.scroll) as u16;
             let mut style = *style;
             if i == self.selected {
-                style = style.bg(theme::SELECT);
-                buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(theme::SELECT));
+                style = style.bg(theme::SELECT());
+                buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(theme::SELECT()));
             } else if style.bg.is_some() {
-                buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(theme::STATUS_BG));
+                buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(theme::STATUS_BG()));
             }
             buf.set_stringn(area.x + 1, y, text, area.width.saturating_sub(1) as usize, style);
         }

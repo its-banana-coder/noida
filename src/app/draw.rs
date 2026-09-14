@@ -15,7 +15,7 @@ impl App {
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
         let [main, status] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
-        f.buffer_mut().set_style(area, Style::default().bg(theme::BG).fg(theme::FG));
+        f.buffer_mut().set_style(area, Style::default().bg(theme::BG()).fg(theme::FG()));
 
         let (show_tree, show_editor, show_agent) = if self.zoom {
             (self.focus == Focus::Tree, self.focus == Focus::Editor, self.focus == Focus::Agent)
@@ -91,7 +91,7 @@ impl App {
     fn draw_editor(&mut self, buf: &mut Buffer, block: Rect) -> Option<(u16, u16)> {
         let mut spans = vec![Span::raw(" ")];
         let mut x = block.x + 2;
-        let active_style = Style::default().fg(theme::HINT_FG).bg(theme::BORDER_FOCUS).add_modifier(Modifier::BOLD);
+        let active_style = Style::default().fg(theme::HINT_FG()).bg(theme::BORDER_FOCUS()).add_modifier(Modifier::BOLD);
         if let Some(view) = &self.view {
             let title = match view {
                 View::Review(v) => format!(" ± {} ", v.title),
@@ -106,7 +106,7 @@ impl App {
             let w = label.chars().count() as u16;
             self.rects.doc_tabs.push((x, x + w, i));
             x += w + 1;
-            let style = if i == self.active_doc && self.view.is_none() { active_style } else { Style::default().fg(theme::DIM) };
+            let style = if i == self.active_doc && self.view.is_none() { active_style } else { Style::default().fg(theme::DIM()) };
             spans.push(Span::styled(label, style));
             spans.push(Span::raw(" "));
         }
@@ -127,10 +127,22 @@ impl App {
             }
             None => {}
         }
+        let root = self.root.clone();
+        let (breadcrumbs, sticky) = (self.settings.breadcrumbs, self.settings.sticky_scroll);
+        let focused = focused || (self.focus == Focus::Editor && matches!(self.mode, Mode::Find(_)));
         match self.docs.get_mut(self.active_doc) {
             Some(doc) => {
+                let mut text_area = area;
+                if breadcrumbs && area.height > 4 {
+                    draw_breadcrumbs(buf, Rect::new(area.x, area.y, area.width, 1), &root, doc);
+                    text_area = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+                }
                 let diags = self.lsp.diagnostics.get(&doc.path).map(Vec::as_slice).unwrap_or(&[]);
-                let c = doc.render(area, buf, focused, &self.syntax, diags);
+                let c = doc.render(text_area, buf, focused, &self.syntax, diags, sticky);
+                let doc_ref: &crate::editor::Doc = doc;
+                if let Mode::Find(bar) = &self.mode {
+                    return bar.render(text_area, buf, Some(doc_ref));
+                }
                 if self.focus == Focus::Editor { c } else { None }
             }
             None => {
@@ -172,9 +184,9 @@ impl App {
                 self.rects.agent_tabs[slot].push((x, x + w, i));
                 x += w + 1;
                 let style = if i == self.slots[slot] {
-                    Style::default().fg(theme::HINT_FG).bg(theme::BORDER_FOCUS).add_modifier(Modifier::BOLD)
+                    Style::default().fg(theme::HINT_FG()).bg(theme::BORDER_FOCUS()).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(theme::DIM)
+                    Style::default().fg(theme::DIM())
                 };
                 spans.push(Span::styled(label, style));
                 spans.push(Span::raw(" "));
@@ -194,7 +206,7 @@ impl App {
                     }
                 } else {
                     let msg = format!("{} is not running — press Alt+3 or click here to start", agent.name);
-                    buf.set_stringn(area.x + 1, area.y + 1, msg, area.width as usize, Style::default().fg(theme::DIM));
+                    buf.set_stringn(area.x + 1, area.y + 1, msg, area.width as usize, Style::default().fg(theme::DIM()));
                 }
             }
             self.refs[slot] = refs;
@@ -203,31 +215,31 @@ impl App {
     }
 
     fn draw_status(&self, buf: &mut Buffer, area: Rect) {
-        buf.set_style(area, Style::default().bg(theme::STATUS_BG).fg(theme::DIM));
-        buf.set_string(area.x, area.y, " NOIDA ", Style::default().fg(theme::HINT_FG).bg(theme::BORDER_FOCUS).add_modifier(Modifier::BOLD));
+        buf.set_style(area, Style::default().bg(theme::STATUS_BG()).fg(theme::DIM()));
+        buf.set_string(area.x, area.y, " NOIDA ", Style::default().fg(theme::HINT_FG()).bg(theme::BORDER_FOCUS()).add_modifier(Modifier::BOLD));
         let x = area.x + 8;
         let width = area.width.saturating_sub(8) as usize;
 
         let (left, color, strong) = match &self.mode {
             Mode::Hints { typed } => (
                 format!("jump: type a label{}  ·  Enter = newest  ·  Esc = cancel", if typed.is_empty() { String::new() } else { format!(" [{typed}]") }),
-                theme::ACCENT,
+                theme::ACCENT(),
                 false,
             ),
-            Mode::Picker(_) => ("type to filter  ·  ↑↓ select  ·  Enter open  ·  Esc cancel".into(), theme::FG, false),
+            Mode::Picker(_) => ("type to filter  ·  ↑↓ select  ·  Enter open  ·  Esc cancel".into(), theme::FG(), false),
+            Mode::Find(_) => ("Enter/↓ next · ↑ previous · Tab replace field · Alt+c case · Alt+w word · Alt+r regex · Alt+l in selection · Alt+Enter select all".into(), theme::FG(), false),
             Mode::Prompt { kind, input } => {
                 let label = match kind {
                     PromptKind::GotoLine => "go to line[:col]",
-                    PromptKind::Find => "find",
                     PromptKind::NewBranch => "new branch name",
                     PromptKind::Commit => "commit message",
                     PromptKind::WorktreeName(_) => "worktree task name",
                 };
-                (format!("{label}: {input}▏"), theme::ACCENT, false)
+                (format!("{label}: {input}▏"), theme::ACCENT(), false)
             }
             Mode::Normal => match (&self.message, &self.banner) {
-                (Some((m, _, err)), _) => (m.clone(), if *err { theme::ERROR } else { theme::ACCENT }, false),
-                (None, Some(b)) => (b.text.clone(), if b.error { theme::ERROR } else { theme::ADDED }, true),
+                (Some((m, _, err)), _) => (m.clone(), if *err { theme::ERROR() } else { theme::ACCENT() }, false),
+                (None, Some(b)) => (b.text.clone(), if b.error { theme::ERROR() } else { theme::ADDED() }, true),
                 (None, None) => (
                     match (self.focus, &self.view) {
                         (Focus::Editor, Some(View::Review(v))) => v.status(),
@@ -236,7 +248,7 @@ impl App {
                         (Focus::Editor, None) => "^S save  ^F find  F12 definition  Alt+l symbols  │  Alt+s send  Alt+e ask  Alt+r review  Alt+x commands".into(),
                         (Focus::Agent, _) => "Alt+j jump to ref  Alt+g sessions  Alt+n next  Alt+v split  │  Alt+r review  Alt+a activity  Alt+x commands".into(),
                     },
-                    theme::DIM,
+                    theme::DIM(),
                     false,
                 ),
             },
@@ -261,7 +273,7 @@ impl App {
         }
         let rw = right.chars().count();
         let style = if strong {
-            Style::default().fg(theme::HINT_FG).bg(color).add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::HINT_FG()).bg(color).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(color)
         };
@@ -269,7 +281,7 @@ impl App {
         let shown: String = left.chars().take(max_left).collect();
         buf.set_string(x, area.y, if strong { format!(" {shown} ") } else { shown }, style);
         if rw < width {
-            buf.set_string(area.x + area.width - rw as u16, area.y, right, Style::default().fg(theme::DIM));
+            buf.set_string(area.x + area.width - rw as u16, area.y, right, Style::default().fg(theme::DIM()));
         }
     }
 }
@@ -285,7 +297,7 @@ fn pane(buf: &mut Buffer, area: Rect, title: Line, focused: bool) {
     if area.width < 2 || area.height < 2 {
         return;
     }
-    let color = if focused { theme::BORDER_FOCUS } else { theme::BORDER };
+    let color = if focused { theme::BORDER_FOCUS() } else { theme::BORDER() };
     Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(color))
@@ -293,19 +305,55 @@ fn pane(buf: &mut Buffer, area: Rect, title: Line, focused: bool) {
         .render(area, buf);
 }
 
+fn draw_breadcrumbs(buf: &mut Buffer, area: Rect, root: &std::path::Path, doc: &mut crate::editor::Doc) {
+    let rel = refs::relative(root, &doc.path).into_owned();
+    let mut parts: Vec<(String, Style)> = rel.split('/').map(|p| (p.to_string(), Style::default().fg(theme::DIM()))).collect();
+    if let Some(last) = parts.last_mut() {
+        last.1 = Style::default().fg(theme::FG());
+    }
+    let line = doc.cursor_line0();
+    for s in doc.scopes_at(line) {
+        parts.push((format!("{} {}", symbol_icon(&s.kind), s.name), Style::default().fg(theme::ACCENT())));
+    }
+    let mut x = area.x + 1;
+    let end = area.x + area.width;
+    for (i, (text, style)) in parts.iter().enumerate() {
+        if i > 0 {
+            if x + 3 >= end {
+                break;
+            }
+            buf.set_string(x, area.y, " › ", Style::default().fg(theme::BORDER()));
+            x += 3;
+        }
+        let (nx, _) = buf.set_stringn(x, area.y, text, end.saturating_sub(x) as usize, *style);
+        x = nx;
+    }
+}
+
+fn symbol_icon(kind: &str) -> &'static str {
+    match kind {
+        "class" | "struct" => "◇",
+        "interface" | "trait" => "◈",
+        "method" | "function" => "ƒ",
+        "module" => "▣",
+        "macro" => "!",
+        _ => "·",
+    }
+}
+
 fn draw_welcome(buf: &mut Buffer, area: Rect) {
     let lines = [
-        ("NOIDA", Style::default().fg(theme::BORDER_FOCUS).add_modifier(Modifier::BOLD)),
-        ("Navigation-Oriented IDE for Developer Agents", Style::default().fg(theme::DIM)),
+        ("NOIDA", Style::default().fg(theme::BORDER_FOCUS()).add_modifier(Modifier::BOLD)),
+        ("Navigation-Oriented IDE for Developer Agents", Style::default().fg(theme::DIM())),
         ("", Style::default()),
-        ("Alt+x            command palette", Style::default().fg(theme::FG)),
-        ("Alt+o / Ctrl+P   open file", Style::default().fg(theme::FG)),
-        ("click a path     in the agent pane to open it", Style::default().fg(theme::FG)),
-        ("Alt+j            jump to a file ref by label", Style::default().fg(theme::FG)),
-        ("Alt+s / Alt+e    send selection / ask the agent", Style::default().fg(theme::FG)),
-        ("Alt+g            switch or resume agent sessions", Style::default().fg(theme::FG)),
-        ("Alt+r            review agent changes", Style::default().fg(theme::FG)),
-        ("Alt+1/2/3        files / editor / agent", Style::default().fg(theme::FG)),
+        ("Alt+x            command palette", Style::default().fg(theme::FG())),
+        ("Alt+o / Ctrl+P   open file", Style::default().fg(theme::FG())),
+        ("click a path     in the agent pane to open it", Style::default().fg(theme::FG())),
+        ("Alt+j            jump to a file ref by label", Style::default().fg(theme::FG())),
+        ("Alt+s / Alt+e    send selection / ask the agent", Style::default().fg(theme::FG())),
+        ("Alt+g            switch or resume agent sessions", Style::default().fg(theme::FG())),
+        ("Alt+r            review agent changes", Style::default().fg(theme::FG())),
+        ("Alt+1/2/3        files / editor / agent", Style::default().fg(theme::FG())),
     ];
     let top = area.y + area.height.saturating_sub(lines.len() as u16) / 2;
     let block_w = lines.iter().map(|(t, _)| t.chars().count()).max().unwrap_or(0) as u16;

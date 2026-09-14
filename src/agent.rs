@@ -58,9 +58,9 @@ impl vt100::Callbacks for Responder {
 
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
         let color = match params {
-            [b"10", b"?"] => Some(("10", theme::FG)),
-            [b"11", b"?"] => Some(("11", theme::BG)),
-            [b"12", b"?"] => Some(("12", theme::FG)),
+            [b"10", b"?"] => Some(("10", theme::FG())),
+            [b"11", b"?"] => Some(("11", theme::BG())),
+            [b"12", b"?"] => Some(("12", theme::FG())),
             _ => None,
         };
         if let Some((code, Color::Rgb(r, g, b))) = color {
@@ -385,8 +385,8 @@ impl Agent {
     pub fn render(&mut self, area: Rect, buf: &mut Buffer, focused: bool, refs: &[FileRef], hover: Option<(u16, u16)>, hints: Option<(usize, usize)>) -> Option<(u16, u16)> {
         self.resize(area.height, area.width);
         if let Some(err) = &self.error {
-            buf.set_stringn(area.x, area.y, err, area.width as usize, Style::default().fg(theme::ERROR));
-            buf.set_string(area.x, area.y + 1, "press Enter to retry", Style::default().fg(theme::DIM));
+            buf.set_stringn(area.x, area.y, err, area.width as usize, Style::default().fg(theme::ERROR()));
+            buf.set_string(area.x, area.y + 1, "press Enter to retry", Style::default().fg(theme::DIM()));
             return None;
         }
         let screen = self.parser.screen();
@@ -415,7 +415,7 @@ impl Agent {
         for (i, r) in refs.iter().enumerate() {
             let mut style = Style::default().add_modifier(Modifier::UNDERLINED);
             if Some(i) == hovered {
-                style = style.fg(theme::LINK).add_modifier(Modifier::BOLD);
+                style = style.fg(theme::LINK()).add_modifier(Modifier::BOLD);
             }
             for &(row, s, e) in &r.segments {
                 for col in s..e.min(area.width) {
@@ -425,7 +425,7 @@ impl Agent {
             if let Some((base, total)) = hints {
                 if let Some(&(row, s, _)) = r.segments.first() {
                     let label = hint_label(base + i, total);
-                    buf.set_string(area.x + s, area.y + row, label, Style::default().fg(theme::HINT_FG).bg(theme::HINT_BG).add_modifier(Modifier::BOLD));
+                    buf.set_string(area.x + s, area.y + row, label, Style::default().fg(theme::HINT_FG()).bg(theme::HINT_BG()).add_modifier(Modifier::BOLD));
                 }
             }
         }
@@ -433,10 +433,10 @@ impl Agent {
         if screen.scrollback() > 0 {
             let tag = format!(" ↑ scrollback {} ", screen.scrollback());
             let x = area.x + area.width.saturating_sub(tag.chars().count() as u16);
-            buf.set_string(x, area.y, tag, Style::default().fg(theme::HINT_FG).bg(theme::ACCENT));
+            buf.set_string(x, area.y, tag, Style::default().fg(theme::HINT_FG()).bg(theme::ACCENT()));
         } else if self.exited {
             let y = area.y + area.height.saturating_sub(1);
-            buf.set_stringn(area.x, y, " process exited — press Enter to restart ", area.width as usize, Style::default().fg(theme::HINT_FG).bg(theme::ACCENT));
+            buf.set_stringn(area.x, y, " process exited — press Enter to restart ", area.width as usize, Style::default().fg(theme::HINT_FG()).bg(theme::ACCENT()));
         }
 
         if focused && !screen.hide_cursor() && screen.scrollback() == 0 && !self.exited {

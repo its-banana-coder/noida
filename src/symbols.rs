@@ -73,6 +73,8 @@ pub struct Symbol {
     /// 0-based line and char column of the symbol name.
     pub line: usize,
     pub col: usize,
+    /// Last line of the whole definition (for breadcrumbs and sticky scroll).
+    pub end_line: usize,
 }
 
 fn parse(lang: Lang, text: &str) -> Option<Tree> {
@@ -91,12 +93,14 @@ pub fn outline(path: &Path, text: &str) -> Vec<Symbol> {
     while let Some(m) = matches.next() {
         let mut name_node = None;
         let mut kind = None;
+        let mut end_line = 0;
         for c in m.captures {
             let cap = names[c.index as usize];
             if cap == "name" {
                 name_node = Some(c.node);
             } else if let Some(k) = cap.strip_prefix("definition.") {
                 kind = Some(k);
+                end_line = c.node.end_position().row;
             }
         }
         let (Some(node), Some(kind)) = (name_node, kind) else { continue };
@@ -108,7 +112,7 @@ pub fn outline(path: &Path, text: &str) -> Vec<Symbol> {
         if out.iter().any(|s| s.line == pos.row && s.col == col) {
             continue;
         }
-        out.push(Symbol { name: name.to_string(), kind: kind.to_string(), line: pos.row, col });
+        out.push(Symbol { name: name.to_string(), kind: kind.to_string(), line: pos.row, col, end_line: end_line.max(pos.row) });
     }
     out.sort_by_key(|s| (s.line, s.col));
     out
@@ -200,6 +204,8 @@ mod tests {
         let got: Vec<_> = syms.iter().map(|s| (s.name.as_str(), s.kind.as_str(), s.line)).collect();
         assert_eq!(got, vec![("Engine", "class", 0), ("render", "method", 2), ("resolve_layout", "function", 4), ("Draw", "interface", 5)]);
         assert_eq!(syms[1].col, 7);
+        assert_eq!((syms[1].line, syms[1].end_line), (2, 2));
+        assert_eq!(syms[0].end_line, 0);
     }
 
     #[test]

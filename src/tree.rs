@@ -266,12 +266,12 @@ impl Tree {
         }
         for (i, row) in self.rows.iter().enumerate().skip(self.offset).take(self.height) {
             let y = area.y + (i - self.offset) as u16;
-            let mut style = Style::default().fg(if row.is_dir { theme::DIR } else { theme::FG });
+            let mut style = Style::default().fg(if row.is_dir { theme::DIR() } else { theme::FG() });
             if Some(row.path.as_path()) == open {
-                style = style.fg(theme::ACCENT).add_modifier(Modifier::BOLD);
+                style = style.fg(theme::ACCENT()).add_modifier(Modifier::BOLD);
             }
             if i == self.selected {
-                style = style.bg(if focused { theme::SELECT } else { theme::SELECT_DIM });
+                style = style.bg(if focused { theme::SELECT() } else { theme::SELECT_DIM() });
                 buf.set_style(Rect::new(area.x, y, area.width, 1), style);
             }
             let icon = match (row.is_dir, self.expanded.contains(&row.path)) {
@@ -284,18 +284,18 @@ impl Tree {
             if let Some(g) = git {
                 if !row.is_dir && Some(row.path.as_path()) != open && i != self.selected {
                     style = style.fg(match g {
-                        FileState::Untracked => theme::ADDED,
-                        FileState::Deleted | FileState::Conflict => theme::ERROR,
-                        FileState::Modified => theme::ACCENT,
-                        FileState::Staged => theme::FG,
+                        FileState::Untracked => theme::ADDED(),
+                        FileState::Deleted | FileState::Conflict => theme::ERROR(),
+                        FileState::Modified => theme::ACCENT(),
+                        FileState::Staged => theme::FG(),
                     });
                 }
             }
             let (agent_mark, agent_color) = match touched.get(&row.path) {
-                Some((Touch::Reading, t)) if t.elapsed() < Duration::from_secs(8) => ("●", theme::LINK),
-                Some((Touch::Edited, t)) if t.elapsed() < Duration::from_secs(8) => ("●", theme::ACCENT),
-                Some((Touch::Edited, _)) => ("◆", theme::BORDER_FOCUS),
-                _ => ("", theme::DIM),
+                Some((Touch::Reading, t)) if t.elapsed() < Duration::from_secs(8) => ("●", theme::LINK()),
+                Some((Touch::Edited, t)) if t.elapsed() < Duration::from_secs(8) => ("●", theme::ACCENT()),
+                Some((Touch::Edited, _)) => ("◆", theme::BORDER_FOCUS()),
+                _ => ("", theme::DIM()),
             };
             let right = match (git, dirty_dir) {
                 (Some(g), _) => g.glyph(),
@@ -312,11 +312,11 @@ impl Tree {
             }
             if !right.is_empty() && right_w < area.width {
                 let color = match git {
-                    Some(FileState::Untracked) => theme::ADDED,
-                    Some(FileState::Deleted | FileState::Conflict) => theme::ERROR,
-                    Some(FileState::Staged) => theme::ADDED,
-                    Some(FileState::Modified) => theme::ACCENT,
-                    None => theme::DIM,
+                    Some(FileState::Untracked) => theme::ADDED(),
+                    Some(FileState::Deleted | FileState::Conflict) => theme::ERROR(),
+                    Some(FileState::Staged) => theme::ADDED(),
+                    Some(FileState::Modified) => theme::ACCENT(),
+                    None => theme::DIM(),
                 };
                 buf.set_string(x, y, right, style.fg(color));
             }
