@@ -17,6 +17,8 @@ use crate::events::Bg;
 use crate::refs::FileRef;
 use crate::theme;
 
+const SCROLLBACK: usize = 10_000;
+
 /// Answers terminal queries (cursor position, device attributes, colors) that
 /// TUIs like codex send on startup, and forwards clipboard writes to the host.
 #[derive(Default)]
@@ -109,6 +111,10 @@ pub struct Agent {
     working: bool,
     /// Rang the bell, or finished work while in a background tab.
     attention: Option<Attention>,
+    /// Current find match as (absolute line, start col, end col exclusive).
+    pub find_match: Option<(usize, u16, u16)>,
+    /// Mouse selection as (anchor, head), each (absolute line, col), inclusive.
+    pub selection: Option<((usize, u16), (usize, u16))>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -140,7 +146,7 @@ impl Agent {
             started_at: None,
             program: parts.next().unwrap_or_default(),
             args: parts.collect(),
-            parser: vt100::Parser::new_with_callbacks(24, 80, 10_000, Responder::default()),
+            parser: vt100::Parser::new_with_callbacks(24, 80, SCROLLBACK, Responder::default()),
             proc: None,
             exited: false,
             error: None,
@@ -149,6 +155,8 @@ impl Agent {
             last_input: None,
             working: false,
             attention: None,
+            find_match: None,
+            selection: None,
         }
     }
 
@@ -220,7 +228,7 @@ impl Agent {
             }
             let _ = tx.send(Bg::PtyExit(id));
         });
-        self.parser = vt100::Parser::new_with_callbacks(rows, cols, 10_000, Responder::default());
+        self.parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK, Responder::default());
         self.proc = Some(Process { master: pair.master, writer, child });
         self.exited = false;
         self.started_at = Some(Instant::now());
@@ -229,12 +237,20 @@ impl Agent {
 
     /// Feed PTY output; returns bytes destined for the host terminal (OSC 52).
     pub fn process(&mut self, bytes: &[u8]) -> Vec<u8> {
+        let lines_before = self.selection.is_some().then(|| self.scrollback_len());
         let at_bottom = self.parser.screen().scrollback() == 0;
         let before = self.parser.screen().scrollback();
         self.parser.process(bytes);
         if !at_bottom {
             // Keep the viewport stable while the user reads scrollback.
             self.parser.screen_mut().set_scrollback(before);
+        }
+        // Output that scrolls lines (or drops them from a full scrollback) moves the selected text.
+        if let Some(n) = lines_before {
+            let after = self.scrollback_len();
+            if after != n || after >= SCROLLBACK {
+                self.selection = None;
+            }
         }
         self.last_output = Some(Instant::now());
         let cb = self.parser.callbacks_mut();
@@ -322,11 +338,88 @@ impl Agent {
         screen.set_scrollback((cur + delta).max(0) as usize);
     }
 
+    /// Lines above the screen. vt100 has no accessor, so clamp an oversized offset.
+    pub fn scrollback_len(&mut self) -> usize {
+        let screen = self.parser.screen_mut();
+        let cur = screen.scrollback();
+        screen.set_scrollback(usize::MAX);
+        let len = screen.scrollback();
+        screen.set_scrollback(cur);
+        len
+    }
+
+    /// Absolute line index of visible row `row` (scrollback lines come first).
+    pub fn line_at(&mut self, row: u16) -> usize {
+        self.scrollback_len() - self.parser.screen().scrollback() + row as usize
+    }
+
+    /// Every line of output, scrollback then screen; the index is the absolute line.
+    /// vt100 only exposes visible rows, so page the viewport through the scrollback.
+    pub fn all_lines(&mut self) -> Vec<String> {
+        let len = self.scrollback_len();
+        let screen = self.parser.screen_mut();
+        let saved = screen.scrollback();
+        let (rows, cols) = screen.size();
+        let step = (rows as usize).max(1);
+        let mut lines = vec![String::new(); len + rows as usize];
+        let mut offset = len;
+        loop {
+            screen.set_scrollback(offset);
+            for (i, text) in screen.rows(0, cols).enumerate() {
+                lines[len - offset + i] = text;
+            }
+            if offset == 0 {
+                break;
+            }
+            offset = offset.saturating_sub(step);
+        }
+        screen.set_scrollback(saved);
+        lines
+    }
+
+    /// Scroll so absolute `line` is visible, centring it when the view has to move.
+    pub fn reveal_line(&mut self, line: usize) {
+        let len = self.scrollback_len();
+        let rows = self.parser.screen().size().0 as usize;
+        let top = len - self.parser.screen().scrollback();
+        if line >= top && line < top + rows {
+            return;
+        }
+        let top = line.saturating_sub(rows / 2).min(len);
+        self.parser.screen_mut().set_scrollback(len - top);
+    }
+
+    /// True when the app enabled mouse reporting, so clicks and drags belong to it.
+    pub fn wants_mouse(&self) -> bool {
+        self.parser.screen().mouse_protocol_mode() != vt100::MouseProtocolMode::None
+    }
+
+    /// Text of the selection (clipped to the visible screen), trailing spaces trimmed.
+    pub fn selection_text(&mut self) -> Option<String> {
+        let (a, b) = self.selection?;
+        let (start, end) = if a <= b { (a, b) } else { (b, a) };
+        let top = self.line_at(0);
+        let (rows, cols) = self.parser.screen().size();
+        let bottom = top + rows as usize;
+        if end.0 < top || start.0 >= bottom {
+            return None;
+        }
+        let (sr, sc) = if start.0 < top { (0, 0) } else { ((start.0 - top) as u16, start.1) };
+        let (er, ec) = if end.0 >= bottom { (rows - 1, cols) } else { ((end.0 - top) as u16, (end.1 + 1).min(cols)) };
+        Some(trim_lines(&self.parser.screen().contents_between(sr, sc, er, ec)))
+    }
+
+    /// The whole visible screen as text.
+    pub fn screen_text(&self) -> String {
+        trim_lines(&self.parser.screen().contents()).trim_end_matches('\n').to_string()
+    }
+
     pub fn send_key(&mut self, key: KeyEvent) {
         if self.exited || self.error.is_some() {
             return;
         }
         self.parser.screen_mut().set_scrollback(0);
+        self.selection = None;
         self.last_input = Some(Instant::now());
         self.attention = None;
         let bytes = encode_key(key, self.parser.screen().application_cursor());
@@ -336,6 +429,7 @@ impl Agent {
     pub fn paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
         self.parser.screen_mut().set_scrollback(0);
+        self.selection = None;
         self.last_input = Some(Instant::now());
         if self.parser.screen().bracketed_paste() {
             self.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
@@ -389,6 +483,7 @@ impl Agent {
             buf.set_string(area.x, area.y + 1, "press Enter to retry", Style::default().fg(theme::DIM()));
             return None;
         }
+        let top = if self.find_match.is_some() || self.selection.is_some() { self.line_at(0) } else { 0 };
         let screen = self.parser.screen();
         let (rows, cols) = screen.size();
         for row in 0..rows.min(area.height) {
@@ -430,6 +525,31 @@ impl Agent {
             }
         }
 
+        if let Some((a, b)) = self.selection {
+            let (start, end) = if a <= b { (a, b) } else { (b, a) };
+            let style = Style::default().bg(theme::SELECT()).remove_modifier(Modifier::REVERSED);
+            for row in 0..rows.min(area.height) {
+                let line = top + row as usize;
+                if line < start.0 || line > end.0 {
+                    continue;
+                }
+                let from = if line == start.0 { start.1 } else { 0 };
+                let to = if line == end.0 { end.1 + 1 } else { cols };
+                for col in from..to.min(cols).min(area.width) {
+                    buf[(area.x + col, area.y + row)].set_style(style);
+                }
+            }
+        }
+        if let Some((line, from, to)) = self.find_match {
+            if line >= top && line < top + rows.min(area.height) as usize {
+                let row = (line - top) as u16;
+                let style = Style::default().fg(theme::HINT_FG()).bg(theme::ACCENT()).remove_modifier(Modifier::REVERSED);
+                for col in from..to.min(area.width) {
+                    buf[(area.x + col, area.y + row)].set_style(style);
+                }
+            }
+        }
+
         if screen.scrollback() > 0 {
             let tag = format!(" ↑ scrollback {} ", screen.scrollback());
             let x = area.x + area.width.saturating_sub(tag.chars().count() as u16);
@@ -466,6 +586,46 @@ pub fn hint_label(i: usize, total: usize) -> String {
     } else {
         format!("{}{}", keys[from_bottom / keys.len() % keys.len()], keys[from_bottom % keys.len()])
     }
+}
+
+/// Case-insensitive unless the query has uppercase. Returns (line, start col, end col)
+/// in terminal cells, so wide characters count twice.
+pub fn find_matches(lines: &[String], query: &str) -> Vec<(usize, u16, u16)> {
+    let case = query.chars().any(char::is_uppercase);
+    let fold = |c: char| if case { c } else { c.to_lowercase().next().unwrap_or(c) };
+    let needle: Vec<char> = query.chars().map(fold).collect();
+    let mut out = Vec::new();
+    if needle.is_empty() {
+        return out;
+    }
+    for (i, line) in lines.iter().enumerate() {
+        let hay: Vec<char> = line.chars().map(fold).collect();
+        if hay.len() < needle.len() {
+            continue;
+        }
+        let mut cols = Vec::with_capacity(hay.len() + 1);
+        let mut col = 0u16;
+        for c in line.chars() {
+            cols.push(col);
+            col = col.saturating_add(unicode_width::UnicodeWidthChar::width(c).unwrap_or(0) as u16);
+        }
+        cols.push(col);
+        let mut s = 0;
+        while s + needle.len() <= hay.len() {
+            if hay[s..s + needle.len()] == needle[..] {
+                let end = s + needle.len();
+                out.push((i, cols[s], cols[end].max(cols[s] + 1)));
+                s = end;
+            } else {
+                s += 1;
+            }
+        }
+    }
+    out
+}
+
+fn trim_lines(text: &str) -> String {
+    text.split('\n').map(str::trim_end).collect::<Vec<_>>().join("\n")
 }
 
 fn button_code(b: MouseButton) -> u16 {
@@ -592,6 +752,47 @@ mod tests {
         p.process(b"ab\x1b[6n\x1b]11;?\x07");
         let reply = String::from_utf8(p.callbacks().to_pty.clone()).unwrap();
         assert!(reply.starts_with("\x1b[1;3R\x1b]11;rgb:1e1e/1e1e/2e2e"), "{reply:?}");
+    }
+
+    #[test]
+    fn all_lines_include_scrollback() {
+        let mut agent = Agent::new(0, "t", "sh", PathBuf::from("."));
+        agent.resize(5, 20);
+        let input: String = (1..=30).map(|i| format!("line {i}\r\n")).collect();
+        agent.process(input.as_bytes());
+        agent.parser.screen_mut().set_scrollback(7);
+        let lines = agent.all_lines();
+        assert_eq!(agent.parser.screen().scrollback(), 7, "offset restored");
+        assert_eq!(agent.scrollback_len(), 26);
+        assert_eq!(lines.len(), 31);
+        assert_eq!(lines[0], "line 1");
+        assert_eq!(lines[12], "line 13");
+        assert_eq!(lines[29], "line 30");
+        assert_eq!(lines[30], "");
+
+        assert!(find_matches(&lines, "LINE 3").is_empty(), "uppercase query is case-sensitive");
+        let m = find_matches(&lines, "line 3");
+        assert_eq!(m.iter().map(|x| x.0).collect::<Vec<_>>(), vec![2, 29]);
+        assert_eq!(m[0], (2, 0, 6));
+
+        agent.reveal_line(3);
+        assert_eq!(agent.line_at(0), 1);
+        agent.reveal_line(29);
+        assert_eq!(agent.line_at(0), 26);
+    }
+
+    #[test]
+    fn selection_copies_text() {
+        let mut agent = Agent::new(0, "t", "sh", PathBuf::from("."));
+        agent.resize(4, 20);
+        agent.process(b"alpha beta\r\ngamma   \r\ndelta");
+        let top = agent.line_at(0);
+        agent.selection = Some(((top + 2, 2), (top, 6)));
+        assert_eq!(agent.selection_text().unwrap(), "beta\ngamma\ndel");
+        agent.selection = Some(((top, 0), (top, 4)));
+        assert_eq!(agent.selection_text().unwrap(), "alpha");
+        assert_eq!(agent.screen_text(), "alpha beta\ngamma\ndelta");
+        assert_eq!(find_matches(&["日本 ok".to_string()], "ok"), vec![(0, 5, 7)]);
     }
 
     #[test]

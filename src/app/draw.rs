@@ -287,6 +287,11 @@ impl App {
                     if slot_focused {
                         *cursor = c;
                     }
+                    if let Mode::AgentFind(bar) = &self.mode {
+                        if bar.agent_id == agent.id {
+                            *cursor = bar.render(area, buf);
+                        }
+                    }
                 } else {
                     let msg = format!("{} is not running — press Alt+3 or click here to start", agent.name);
                     buf.set_stringn(area.x + 1, area.y + 1, msg, area.width as usize, Style::default().fg(theme::DIM()));
@@ -311,6 +316,7 @@ impl App {
             ),
             Mode::Picker(_) => ("type to filter  ·  ↑↓ select  ·  Enter open  ·  Esc cancel".into(), theme::FG(), false),
             Mode::Find(_) => ("Enter/↓ next · ↑ previous · Tab replace field · Alt+c case · Alt+w word · Alt+r regex · Alt+l in selection · Alt+Enter select all".into(), theme::FG(), false),
+            Mode::AgentFind(_) => ("find in agent output: Enter/↓ next · ↑ previous · Esc close · capitals make it case-sensitive".into(), theme::FG(), false),
             Mode::Prompt { kind, input } => {
                 let label = match kind {
                     PromptKind::GotoLine => "go to line[:col]",
@@ -339,7 +345,7 @@ impl App {
                         (Focus::Editor, Some(View::Search(v))) => v.status(),
                         (Focus::Tree, _) => "↑↓ move  ⏎ open  ← collapse  R refresh  │  Alt+x commands  Alt+o files  Alt+g sessions  Alt+q quit".into(),
                         (Focus::Editor, None) => "^S save  ^F find  F12 definition  Alt+l symbols  │  Alt+s send  Alt+e ask  Alt+r review  Alt+x commands".into(),
-                        (Focus::Agent, _) => "Alt+j jump to ref  Alt+g sessions  Alt+n next  Alt+v split  │  Alt+r review  Alt+a activity  Alt+x commands".into(),
+                        (Focus::Agent, _) => "Alt+j jump to ref  Alt+? find  drag to copy  Alt+g sessions  Alt+n next  Alt+v split  │  Alt+r review  Alt+x commands".into(),
                     },
                     theme::DIM(),
                     false,
