@@ -227,7 +227,7 @@
   .road ul { margin: 8px 0 0; padding-left: 18px; color: var(--slate); font-size: 16.5px; columns: 2; column-gap: 40px; }
   .road ul li { break-inside: avoid; margin-bottom: 4px; }
 
-  .status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin-top: 36px; }
+  .status-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 32px; margin-top: 36px; }
   .status-grid h3 { font-size: 18px; }
   .status-grid p { color: var(--slate); font-size: 16px; }
 
@@ -395,12 +395,17 @@
   <section id="install" aria-labelledby="install-h">
     <div class="install">
       <div>
-        <h2 id="install-h">Install in one command.</h2>
+        <h2 id="install-h">Install in a minute.</h2>
         <p class="muted">Download a binary for Linux or macOS from the <a href="https://github.com/its-banana-coder/noida/releases">latest release</a>, or build from source with Rust 1.88 or newer. NOIDA adds a tab for each agent CLI it finds on your <code>PATH</code>.</p>
+        <p class="muted">Binaries: Linux x86_64 (a static build for any distro, and one for Ubuntu 22.04+) and macOS for Apple Silicon and Intel, each with a checksum. They're built in the open on GitHub Actions; the Intel Mac build hasn't been run by anyone yet. macOS binaries are a plain <code>.tar.gz</code>, not a <code>.dmg</code>, and aren't signed by Apple yet, so the first run may be blocked: <code>xattr -d com.apple.quarantine noida</code> clears it.</p>
         <p class="muted">On a Mac, set your terminal's Option key to act as Alt, or press <kbd>Ctrl+]</kbd> before any shortcut. The <a href="https://github.com/its-banana-coder/noida#-macos-option-as-alt">README has the setting for each terminal</a>.</p>
       </div>
       <div class="cmd" id="cmd">
-<button class="copy" id="copy" type="button">Copy</button><span class="c"># install</span>
+<button class="copy" id="copy" type="button">Copy</button><span class="c"># download a binary (Linux, any distro)</span>
+<span class="p">$ </span>curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.1-alpha/noida-x86_64-unknown-linux-musl.tar.gz
+<span class="p">$ </span>tar xzf noida-*.tar.gz &amp;&amp; sudo mv noida /usr/local/bin/
+
+<span class="c"># or build from source</span>
 <span class="p">$ </span>cargo install --git https://github.com/its-banana-coder/noida
 
 <span class="c"># open a project</span>
@@ -447,8 +452,9 @@
         <h3>Next</h3>
         <ul>
           <li>Hands-on testing in Mac terminals</li>
+          <li>Homebrew tap</li>
+          <li>Signed and notarized macOS binaries</li>
           <li>Polish from early feedback</li>
-          <li>More language servers verified</li>
         </ul>
       </li>
       <li>
@@ -468,6 +474,7 @@
     <div class="status-grid">
       <div><h3>It's alpha</h3><p>Used daily on Linux and WSL2 with Claude Code, Codex and rust-analyzer. CI builds and tests every commit on macOS too, but hands-on Mac use is still limited.</p></div>
       <div><h3>Your agent stays yours</h3><p>NOIDA runs the real CLI and adds its hooks per session. Your Claude and Codex config files are never modified.</p></div>
+      <div><h3>Free and open</h3><p>MIT licensed, and built and released on GitHub's free infrastructure for public projects. No account and no paid tier.</p></div>
       <div><h3>Commit before rejecting</h3><p>Rejecting a hunk reverts it on disk. Destructive actions ask twice, but git is your undo.</p></div>
     </div>
   </section>
@@ -605,7 +612,7 @@
 
   $("copy").addEventListener("click", async () => {
     try {
-      await navigator.clipboard.writeText("cargo install --git https://github.com/its-banana-coder/noida");
+      await navigator.clipboard.writeText("curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.1-alpha/noida-x86_64-unknown-linux-musl.tar.gz && tar xzf noida-x86_64-unknown-linux-musl.tar.gz && sudo mv noida /usr/local/bin/");
       $("copy").textContent = "Copied";
     } catch {
       $("copy").textContent = "Select and copy";
