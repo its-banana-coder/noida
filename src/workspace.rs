@@ -28,6 +28,11 @@ pub struct AgentState {
 pub struct Workspace {
     pub docs: Vec<DocState>,
     pub active_doc: usize,
+    /// Doc shown by each editor group (indices into `docs`); empty means one group.
+    #[serde(default)]
+    pub groups: Vec<usize>,
+    #[serde(default)]
+    pub active_group: usize,
     pub show_tree: bool,
     pub tree_width: u16,
     pub agent_pct: u16,
@@ -97,6 +102,8 @@ mod tests {
         let ws = Workspace {
             docs: vec![DocState { path: "src/a.rs".into(), line: 10, col: 2 }],
             active_doc: 0,
+            groups: vec![0, 0],
+            active_group: 1,
             show_tree: true,
             tree_width: 30,
             agent_pct: 45,
@@ -108,5 +115,13 @@ mod tests {
         };
         let text = serde_json::to_string(&ws).unwrap();
         assert_eq!(serde_json::from_str::<Workspace>(&text).unwrap(), ws);
+    }
+
+    #[test]
+    fn loads_without_groups() {
+        let text = r#"{"docs":[],"active_doc":0,"show_tree":true,"tree_width":30,"agent_pct":45,"split":false,"agents":[],"slots":[0,0]}"#;
+        let ws: Workspace = serde_json::from_str(text).unwrap();
+        assert!(ws.groups.is_empty());
+        assert_eq!(ws.active_group, 0);
     }
 }

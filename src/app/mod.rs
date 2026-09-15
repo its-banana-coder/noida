@@ -3,6 +3,7 @@
 mod draw;
 mod files;
 mod findbar;
+mod groups;
 mod lsp_ui;
 mod search;
 mod views;
@@ -35,6 +36,7 @@ use crate::tree::{Activate, Tree};
 use crate::workspace::{self, AgentState, DocState, Workspace};
 
 use findbar::{FindBar, FindResult};
+use groups::Group;
 use files::TreeMode;
 use lsp_ui::{Popup, PopupKind};
 use search::SearchView;
@@ -96,10 +98,13 @@ struct Rects {
     tree: Rect,
     editor_block: Rect,
     editor: Rect,
+    /// Per editor group: bordered block and inner text area (zero-sized when hidden).
+    group_blocks: [Rect; 2],
+    groups: [Rect; 2],
     agent_area: Rect,
     agent_blocks: [Rect; 2],
     agents: [Rect; 2],
-    doc_tabs: Vec<(u16, u16, usize)>,
+    doc_tabs: [Vec<(u16, u16, usize)>; 2],
     agent_tabs: [Vec<(u16, u16, usize)>; 2],
     agent_closes: [Vec<(u16, usize)>; 2],
 }
@@ -119,7 +124,8 @@ pub struct App {
     syntax: Syntax,
     tree: Tree,
     docs: Vec<Doc>,
-    active_doc: usize,
+    groups: Vec<Group>,
+    active_group: usize,
     agents: Vec<Agent>,
     next_agent_id: usize,
     slots: [usize; 2],
@@ -200,7 +206,8 @@ impl App {
             syntax: Syntax::load(),
             tree: Tree::new(root.clone()),
             docs: Vec::new(),
-            active_doc: 0,
+            groups: vec![Group::default()],
+            active_group: 0,
             agents: Vec::new(),
             next_agent_id: 0,
             slots: [0, 0],
@@ -305,13 +312,23 @@ impl App {
         self.agent_pct = ws.agent_pct.clamp(15, 85);
         self.split_pct = ws.split_pct.unwrap_or(50).clamp(15, 85);
         self.tree.expand_rel(&ws.expanded);
+        // Saved index → index in `self.docs` (files that vanished are skipped).
+        let mut opened = Vec::new();
         for d in &ws.docs {
             let path = self.root.join(&d.path);
             if path.is_file() {
                 self.open_location(&path, Some(d.line), Some(d.col), None);
             }
+            opened.push(self.docs.iter().position(|doc| doc.path == path));
         }
-        self.active_doc = ws.active_doc.min(self.docs.len().saturating_sub(1));
+        let restore = |saved: usize| opened.get(saved).copied().flatten().unwrap_or(0);
+        if ws.groups.len() == 2 && !self.docs.is_empty() {
+            self.groups = ws.groups.iter().map(|&i| Group { active: restore(i) }).collect();
+            self.active_group = ws.active_group.min(1);
+        } else {
+            self.groups = vec![Group { active: restore(ws.active_doc) }];
+            self.active_group = 0;
+        }
         self.back.clear();
         self.message = None;
         if with_agents {
@@ -333,14 +350,18 @@ impl App {
     }
 
     fn workspace(&self) -> Workspace {
+        // Only docs inside the project are saved, so map indices to the saved list.
+        let saved: Vec<usize> = (0..self.docs.len()).filter(|&i| self.docs[i].path.starts_with(&self.root)).collect();
+        let saved_index = |i: usize| saved.iter().position(|&s| s == i).unwrap_or(0);
         Workspace {
-            docs: self
-                .docs
+            docs: saved
                 .iter()
-                .filter(|d| d.path.starts_with(&self.root))
+                .map(|&i| &self.docs[i])
                 .map(|d| DocState { path: refs::relative(&self.root, &d.path).into_owned(), line: d.cursor_line(), col: d.cursor_col() })
                 .collect(),
-            active_doc: self.active_doc,
+            active_doc: saved_index(self.active_doc()),
+            groups: if self.groups.len() > 1 { self.groups.iter().map(|g| saved_index(g.active)).collect() } else { Vec::new() },
+            active_group: self.active_group,
             show_tree: self.show_tree,
             tree_width: self.tree_width,
             agent_pct: self.agent_pct,
@@ -392,7 +413,7 @@ impl App {
     }
 
     fn doc(&self) -> Option<&Doc> {
-        self.docs.get(self.active_doc)
+        self.docs.get(self.active_doc())
     }
 
     fn push_agent(&mut self, name: &str, command: &str, cwd: PathBuf) -> usize {
@@ -528,7 +549,7 @@ impl App {
 
     fn refresh_marks(&mut self) {
         let Some(repo) = &self.repo else { return };
-        if let Some(doc) = self.docs.get_mut(self.active_doc) {
+        if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
             if doc.path.starts_with(&repo.root) {
                 doc.marks = repo.line_marks(&doc.path);
             }
@@ -701,7 +722,7 @@ impl App {
             for i in 0..self.docs.len() {
                 if let Some(msg) = self.docs[i].check_disk(&self.syntax) {
                     self.info(msg);
-                    if i == self.active_doc {
+                    if i == self.active_doc() {
                         self.refresh_marks();
                     }
                     changed = true;
@@ -769,7 +790,7 @@ impl App {
             Mode::Find(bar) => {
                 bar.paste(text);
                 let (q, o) = (bar.query.clone(), bar.opts);
-                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                     doc.set_search(&q, o);
                 }
             }
@@ -780,7 +801,7 @@ impl App {
                     }
                 }
                 Focus::Editor if self.view.is_none() => {
-                    if let Some(d) = self.docs.get_mut(self.active_doc) {
+                    if let Some(d) = self.docs.get_mut(self.groups[self.active_group].active) {
                         d.insert_text(text);
                     }
                 }
@@ -978,8 +999,10 @@ impl App {
             KeyCode::Char('h') if ctrl => return self.run(Action::FindReplace),
             KeyCode::F(3) if shift => return self.find_step(false),
             KeyCode::F(3) => return self.run(Action::FindNext),
+            // Ctrl+\ arrives as 0x1C, which crossterm reports as Ctrl+4.
+            KeyCode::Char('\\' | '4') if ctrl && !alt => return self.run(Action::SplitEditor),
             KeyCode::Esc if self.doc().is_some_and(|d| d.search.is_some() && d.cursor_count() == 1 && !d.has_selection()) => {
-                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                     doc.clear_search();
                 }
                 return;
@@ -997,7 +1020,7 @@ impl App {
             KeyCode::Left if alt => return self.run(Action::GoBack),
             KeyCode::Right if alt => return self.go_forward(),
             KeyCode::Char('s') if ctrl => {
-                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                     match doc.save() {
                         Ok(()) => {
                             let (path, name) = (doc.path.clone(), doc.file_name());
@@ -1013,7 +1036,7 @@ impl App {
             }
             _ => {}
         }
-        let Some(doc) = self.docs.get_mut(self.active_doc) else {
+        let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) else {
             if key.code == KeyCode::Tab || key.code == KeyCode::Esc {
                 self.focus = Focus::Tree;
             }
@@ -1025,7 +1048,7 @@ impl App {
             return self.info(msg);
         }
         if doc.md_preview {
-            let page = self.rects.editor.height.saturating_sub(2) as usize;
+            let page = self.rects.groups[self.active_group].height.saturating_sub(2) as usize;
             match key.code {
                 KeyCode::Down | KeyCode::Char('j') => doc.md_scroll += 1,
                 KeyCode::Up | KeyCode::Char('k') => doc.md_scroll = doc.md_scroll.saturating_sub(1),
@@ -1130,7 +1153,7 @@ impl App {
         match kind {
             PromptKind::GotoLine => {
                 let mut parts = input.split(':').map(|s| s.trim().parse::<usize>().ok());
-                if let (Some(Some(line)), Some(doc)) = (parts.next(), self.docs.get_mut(self.active_doc)) {
+                if let (Some(Some(line)), Some(doc)) = (parts.next(), self.docs.get_mut(self.groups[self.active_group].active)) {
                     doc.goto(line, parts.next().flatten(), None);
                 }
             }
@@ -1184,7 +1207,7 @@ impl App {
         if replace && !query.is_empty() {
             bar.focus_replace();
         }
-        if let Some(doc) = self.docs.get_mut(self.active_doc) {
+        if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
             doc.set_search(&query, opts);
         }
         self.view = None;
@@ -1194,7 +1217,7 @@ impl App {
 
     fn find_step(&mut self, forward: bool) {
         let last = self.last_search.clone();
-        let Some(doc) = self.docs.get_mut(self.active_doc) else { return };
+        let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) else { return };
         if doc.search.is_none() {
             match last {
                 Some((q, o)) => doc.set_search(&q, o),
@@ -1209,7 +1232,7 @@ impl App {
     fn on_find_key(&mut self, mut bar: FindBar, key: KeyEvent) {
         let result = bar.handle_key(key);
         let (query, opts, replacement) = (bar.query.clone(), bar.opts, bar.replace.clone());
-        let Some(doc) = self.docs.get_mut(self.active_doc) else { return };
+        let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) else { return };
         match result {
             FindResult::Close => {
                 if !query.is_empty() {
@@ -1255,6 +1278,8 @@ impl App {
         let agent_blocks = r.agent_blocks;
         let agent_area = r.agent_area;
         let slot_at = (0..2).find(|&s| agent_areas[s].width > 0 && inside(agent_areas[s]));
+        let group_blocks = r.group_blocks;
+        let group_at = (0..self.groups.len()).find(|&g| group_blocks[g].width > 0 && inside(group_blocks[g]));
 
         self.hover = slot_at.map(|s| (s, y - agent_areas[s].y, x - agent_areas[s].x));
 
@@ -1280,10 +1305,12 @@ impl App {
                     self.active_slot = slot;
                     self.set_focus(Focus::Agent);
                 } else if y == self.rects.editor_block.y && inside(self.rects.editor_block) {
-                    let hit = self.rects.doc_tabs.iter().find(|(a, b, _)| x >= *a && x < *b).map(|t| t.2);
+                    let g = group_at.unwrap_or(self.active_group);
+                    self.active_group = g;
+                    let hit = self.rects.doc_tabs[g].iter().find(|(a, b, _)| x >= *a && x < *b).map(|t| t.2);
                     if let Some(i) = hit {
                         self.view = None;
-                        self.active_doc = i;
+                        self.set_active_doc(i);
                         let p = self.docs[i].path.clone();
                         self.tree.reveal(&p);
                         self.refresh_marks();
@@ -1320,7 +1347,20 @@ impl App {
                             self.on_view_result(r);
                         }
                         None => {
-                            if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                            // Clicking another group focuses it. When both groups show the same
+                            // doc its stored layout belongs to the previously focused group, so
+                            // that click only moves focus (the next render re-maps the doc).
+                            let Some(g) = group_at else { return };
+                            let switched = g != self.active_group;
+                            let shared = self.groups.iter().all(|grp| grp.active == self.groups[g].active);
+                            if switched {
+                                self.active_group = g;
+                                self.refresh_marks();
+                            }
+                            if (switched && shared) || !inside(self.rects.groups[g]) {
+                                return;
+                            }
+                            if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                                 let alt = m.modifiers.contains(KeyModifiers::ALT);
                                 let shift = m.modifiers.contains(KeyModifiers::SHIFT);
                                 let click = doc.click(x, y, shift && !alt, alt && !shift);
@@ -1354,14 +1394,16 @@ impl App {
                 }
             }
             MouseEventKind::Down(MouseButton::Middle) if y == self.rects.editor_block.y => {
-                if let Some(i) = self.rects.doc_tabs.iter().find(|(a, b, _)| x >= *a && x < *b).map(|t| t.2) {
-                    self.active_doc = i;
+                let g = group_at.unwrap_or(self.active_group);
+                if let Some(i) = self.rects.doc_tabs[g].iter().find(|(a, b, _)| x >= *a && x < *b).map(|t| t.2) {
+                    self.active_group = g;
+                    self.set_active_doc(i);
                     self.run(Action::CloseFile);
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => match self.drag {
                 Drag::Editor => {
-                    if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                         let column = m.modifiers.contains(KeyModifiers::ALT);
                         doc.drag(x, y, column);
                     }
@@ -1402,7 +1444,8 @@ impl App {
                         Some(View::Activity(v)) => v.scroll_by(delta),
                         Some(View::Search(v)) => v.scroll_by(delta),
                         None => {
-                            if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                            let g = group_at.unwrap_or(self.active_group);
+                            if let Some(doc) = self.docs.get_mut(self.groups[g].active) {
                                 if doc.md_preview {
                                     doc.md_scroll = (doc.md_scroll as isize + delta).max(0) as usize;
                                 } else {
@@ -1481,7 +1524,7 @@ impl App {
                 self.info(if wrap { "word wrap on" } else { "word wrap off" });
             }
             Action::Fold | Action::Unfold => {
-                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                     let line = doc.cursor_line0();
                     let folded = doc.is_folded(line);
                     if (action == Action::Fold) != folded || action == Action::Fold {
@@ -1490,24 +1533,24 @@ impl App {
                 }
             }
             Action::FoldAll => {
-                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                     doc.fold_all();
                 }
             }
             Action::UnfoldAll => {
-                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                     doc.unfold_all();
                 }
             }
             Action::ToggleComment => {
-                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                     if !doc.toggle_comment() {
                         self.info("no comment syntax known for this file type");
                     }
                 }
             }
             Action::SelectAllOccurrences => {
-                let Some(doc) = self.docs.get_mut(self.active_doc) else { return };
+                let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) else { return };
                 let (query, word) = match doc.selected_text() {
                     Some(t) if !t.contains('\n') => (t, false),
                     _ => match doc.word_at_cursor() {
@@ -1521,7 +1564,7 @@ impl App {
                 self.info(format!("{n} cursors"));
             }
             Action::AddCursorAbove | Action::AddCursorBelow => {
-                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                     doc.add_cursor_vertical(action == Action::AddCursorBelow);
                 }
             }
@@ -1533,12 +1576,12 @@ impl App {
                 self.focus = Focus::Editor;
             }
             Action::CloseOtherFiles => {
-                let keep = self.active_doc;
+                let keep = self.active_doc();
                 self.close_where("others", |i, _| i != keep);
             }
             Action::CloseAllFiles => self.close_where("all", |_, _| true),
             Action::CloseFilesToRight => {
-                let keep = self.active_doc;
+                let keep = self.active_doc();
                 self.close_where("right", |i, _| i > keep);
             }
             Action::PinFile => self.toggle_pin(),
@@ -1567,7 +1610,7 @@ impl App {
                 });
             }
             Action::ToggleMarkdownPreview => {
-                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                     if crate::markdown::is_markdown(&doc.path) {
                         doc.md_preview = !doc.md_preview;
                     } else {
@@ -1599,6 +1642,10 @@ impl App {
                 self.refresh_git();
             }
             Action::CloseFile => self.close_doc(),
+            Action::SplitEditor => self.split_editor(),
+            Action::FocusOtherEditorGroup => self.focus_other_group(),
+            Action::CloseEditorGroup => self.close_group(),
+            Action::MoveTabToOtherGroup => self.move_tab_to_other_group(),
             Action::NextFile => self.cycle_doc(1),
             Action::PrevFile => self.cycle_doc(-1),
             Action::ToggleTree => {
@@ -1765,7 +1812,7 @@ impl App {
                 }
             }
             Action::ExpandSelection => {
-                let Some(doc) = self.docs.get_mut(self.active_doc) else { return };
+                let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) else { return };
                 let text = doc.text();
                 match symbols::expand(&doc.path, &text, doc.selection_bytes()) {
                     Some(range) => doc.expand_to(range),
@@ -1773,7 +1820,7 @@ impl App {
                 }
             }
             Action::ShrinkSelection => {
-                if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                     doc.shrink_selection();
                 }
             }
@@ -2051,7 +2098,7 @@ impl App {
         if locs.len() == 1 {
             let (p, line, col16) = locs[0].clone();
             self.open_location(&p, Some(line + 1), None, None);
-            if let Some(doc) = self.docs.get_mut(self.active_doc) {
+            if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                 let col = doc.char_col_from_utf16(line, col16);
                 doc.goto(line + 1, Some(col + 1), None);
             }
@@ -2084,8 +2131,8 @@ impl App {
         }
         self.view = None;
         let n = self.docs.len() as isize;
-        self.active_doc = ((self.active_doc as isize + delta).rem_euclid(n)) as usize;
-        let path = self.docs[self.active_doc].path.clone();
+        self.set_active_doc(((self.active_doc() as isize + delta).rem_euclid(n)) as usize);
+        let path = self.docs[self.active_doc()].path.clone();
         self.tree.reveal(&path);
         self.refresh_marks();
     }
@@ -2100,11 +2147,12 @@ impl App {
         if dirty && !self.confirmed("close-doc") {
             return self.error(format!("{name} has unsaved changes — close again to discard"));
         }
-        let path = self.docs[self.active_doc].path.clone();
+        let path = self.docs[self.active_doc()].path.clone();
         self.lsp.did_close(&path);
         self.lsp_synced.remove(&path);
-        self.docs.remove(self.active_doc);
-        self.active_doc = self.active_doc.min(self.docs.len().saturating_sub(1));
+        let i = self.active_doc();
+        self.docs.remove(i);
+        groups::on_doc_removed(&mut self.groups, &mut self.active_group, i, self.docs.len());
         self.refresh_marks();
     }
 
@@ -2164,7 +2212,7 @@ impl App {
                 Err(e) => return self.error(format!("cannot open {}: {e}", refs::relative(&self.root, path))),
             },
         };
-        self.active_doc = idx;
+        self.set_active_doc(idx);
         if let Some(l) = line {
             self.docs[idx].goto(l, col, end_line);
         }
@@ -2191,7 +2239,7 @@ impl App {
             }
         };
         self.view = None;
-        self.active_doc = idx;
+        self.set_active_doc(idx);
         self.docs[idx].goto(loc.1, Some(loc.2), None);
         self.tree.reveal(&loc.0);
         self.refresh_marks();

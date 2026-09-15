@@ -43,6 +43,14 @@ impl App {
         } else {
             [agent_area, Rect::default()]
         };
+        // Views take the whole editor area; otherwise each group gets an equal half.
+        let mut group_blocks = [Rect::default(); 2];
+        if self.view.is_none() && self.groups.len() == 2 && editor_block.width >= 40 {
+            let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(editor_block);
+            group_blocks = [left, right];
+        } else {
+            group_blocks[self.active_group] = editor_block;
+        }
 
         self.rects = Rects {
             main,
@@ -50,10 +58,12 @@ impl App {
             tree: inner(tree_block),
             editor_block,
             editor: inner(editor_block),
+            group_blocks,
+            groups: [inner(group_blocks[0]), inner(group_blocks[1])],
             agent_area,
             agent_blocks,
             agents: [inner(agent_blocks[0]), inner(agent_blocks[1])],
-            doc_tabs: Vec::new(),
+            doc_tabs: [Vec::new(), Vec::new()],
             agent_tabs: [Vec::new(), Vec::new()],
             agent_closes: [Vec::new(), Vec::new()],
         };
@@ -82,7 +92,7 @@ impl App {
         }
 
         if show_editor {
-            cursor = self.draw_editor(buf, editor_block).or(cursor);
+            cursor = self.draw_editor(buf).or(cursor);
         }
 
         self.refs = [Vec::new(), Vec::new()];
@@ -104,7 +114,26 @@ impl App {
         }
     }
 
-    fn draw_editor(&mut self, buf: &mut Buffer, block: Rect) -> Option<(u16, u16)> {
+    fn draw_editor(&mut self, buf: &mut Buffer) -> Option<(u16, u16)> {
+        // Render the focused group last: a doc shown in both groups keeps the
+        // layout (mouse mapping) of the focused one.
+        let active = self.active_group;
+        let mut cursor = None;
+        for g in [1 - active, active] {
+            if g < self.groups.len() && self.rects.group_blocks[g].width > 0 {
+                let c = self.draw_group(buf, g);
+                if g == active {
+                    cursor = c;
+                }
+            }
+        }
+        cursor
+    }
+
+    fn draw_group(&mut self, buf: &mut Buffer, g: usize) -> Option<(u16, u16)> {
+        let block = self.rects.group_blocks[g];
+        let is_active = g == self.active_group;
+        let shown = self.groups[g].active;
         let mut spans = vec![Span::raw(" ")];
         let mut x = block.x + 2;
         let active_style = Style::default().fg(theme::HINT_FG()).bg(theme::BORDER_FOCUS()).add_modifier(Modifier::BOLD);
@@ -128,7 +157,7 @@ impl App {
         let mut first = 0;
         let width_of = |from: usize, to: usize| labels[from..=to].iter().map(|l| l.chars().count() as u16 + 1).sum::<u16>();
         if !labels.is_empty() {
-            let active = self.active_doc.min(labels.len() - 1);
+            let active = shown.min(labels.len() - 1);
             while first < active && width_of(first, active) + 2 > avail {
                 first += 1;
             }
@@ -144,9 +173,13 @@ impl App {
                 spans.push(Span::styled("›", Style::default().fg(theme::DIM())));
                 break;
             }
-            self.rects.doc_tabs.push((x, x + w, i));
+            self.rects.doc_tabs[g].push((x, x + w, i));
             x += w + 1;
-            let mut style = if i == self.active_doc && self.view.is_none() { active_style } else { Style::default().fg(theme::DIM()) };
+            let mut style = match (i == shown && self.view.is_none(), is_active) {
+                (true, true) => active_style,
+                (true, false) => Style::default().fg(theme::BORDER_FOCUS()).add_modifier(Modifier::BOLD),
+                _ => Style::default().fg(theme::DIM()),
+            };
             if d.preview {
                 style = style.add_modifier(Modifier::ITALIC);
             }
@@ -156,9 +189,10 @@ impl App {
         if self.docs.is_empty() && self.view.is_none() {
             spans.push(Span::raw("EDITOR "));
         }
-        pane(buf, block, Line::from(spans), self.focus == Focus::Editor);
-        let area = self.rects.editor;
-        let focused = self.focus == Focus::Editor && matches!(self.mode, Mode::Normal);
+        pane(buf, block, Line::from(spans), is_active && self.focus == Focus::Editor);
+        let area = self.rects.groups[g];
+        let editor_focused = is_active && self.focus == Focus::Editor;
+        let focused = editor_focused && matches!(self.mode, Mode::Normal);
         match &mut self.view {
             Some(View::Review(v)) => {
                 v.render(area, buf);
@@ -170,14 +204,14 @@ impl App {
             }
             Some(View::Search(v)) => {
                 let c = v.render(area, buf);
-                return if self.focus == Focus::Editor { c } else { None };
+                return if editor_focused { c } else { None };
             }
             None => {}
         }
         let root = self.root.clone();
         let (breadcrumbs, sticky) = (self.settings.breadcrumbs, self.settings.sticky_scroll);
-        let focused = focused || (self.focus == Focus::Editor && matches!(self.mode, Mode::Find(_)));
-        match self.docs.get_mut(self.active_doc) {
+        let focused = focused || (editor_focused && matches!(self.mode, Mode::Find(_)));
+        match self.docs.get_mut(shown) {
             Some(doc) if doc.md_preview => {
                 if area.height < 2 || area.width < 10 {
                     return None;
@@ -218,12 +252,15 @@ impl App {
                 }
                 let diags = self.lsp.diagnostics.get(&doc.path).map(Vec::as_slice).unwrap_or(&[]);
                 let c = doc.render(text_area, buf, focused, &self.syntax, diags, sticky);
+                if !is_active {
+                    return None;
+                }
                 self.last_cursor = c;
                 let doc_ref: &crate::editor::Doc = doc;
                 if let Mode::Find(bar) = &self.mode {
                     return bar.render(text_area, buf, Some(doc_ref));
                 }
-                if self.focus == Focus::Editor { c } else { None }
+                if editor_focused { c } else { None }
             }
             None => {
                 draw_welcome(buf, area);

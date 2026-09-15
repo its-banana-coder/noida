@@ -79,6 +79,10 @@ pub enum Action {
     Save,
     SaveAll,
     CloseFile,
+    SplitEditor,
+    FocusOtherEditorGroup,
+    CloseEditorGroup,
+    MoveTabToOtherGroup,
     NextFile,
     PrevFile,
     ToggleTree,
@@ -174,6 +178,10 @@ impl Action {
             Action::Save => s("Save File", "Ctrl+S"),
             Action::SaveAll => s("Save All Files", ""),
             Action::CloseFile => s("Close File", "Ctrl+W"),
+            Action::SplitEditor => s("View: Split Editor", "Ctrl+\\"),
+            Action::FocusOtherEditorGroup => s("View: Focus Other Editor Group", ""),
+            Action::CloseEditorGroup => s("View: Close Editor Group", ""),
+            Action::MoveTabToOtherGroup => s("View: Move Tab to Other Editor Group", ""),
             Action::NextFile => s("Next Open File", "Ctrl+PgDn"),
             Action::PrevFile => s("Previous Open File", "Ctrl+PgUp"),
             Action::ToggleTree => s("View: Toggle File Tree", "Alt+0"),
@@ -258,7 +266,7 @@ impl Action {
             ToggleMarkdownPreview, Fold, Unfold, FoldAll, UnfoldAll, ToggleWordWrap, OpenSettings, ToggleTheme, ExpandSelection, ShrinkSelection, Save, SaveAll, CloseFile, NextFile, PrevFile,
             RecentFiles, RecentLocations, ReopenClosedFile, CloseOtherFiles, CloseAllFiles, CloseFilesToRight, PinFile,
             NewFile, NewFolder, RenamePath, DeletePath, CopyRelativePath, CopyAbsolutePath, RevealInOs, ToggleOutline,
-            JumpToRef, GoBack, ToggleTree, Zoom, FocusTree, FocusEditor, FocusAgent, Keys, Quit,
+            JumpToRef, GoBack, ToggleTree, Zoom, SplitEditor, FocusOtherEditorGroup, CloseEditorGroup, MoveTabToOtherGroup, FocusTree, FocusEditor, FocusAgent, Keys, Quit,
         ]);
         v
     }
