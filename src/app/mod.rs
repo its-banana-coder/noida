@@ -69,6 +69,7 @@ enum PromptKind {
     NewFolder,
     Rename,
     RenameSymbol,
+    RenameAgent,
     NewBranch,
     Commit,
     WorktreeName(AgentKind),
@@ -81,6 +82,7 @@ enum View {
     Search(SearchView),
     AgentChanges(AgentChangesView),
     Compare(CompareView),
+    Transcript(views::TranscriptView),
 }
 
 #[derive(PartialEq)]
@@ -127,6 +129,8 @@ struct Rects {
     doc_tabs: [Vec<(u16, u16, usize)>; 2],
     agent_tabs: [Vec<(u16, u16, usize)>; 2],
     agent_closes: [Vec<(u16, usize)>; 2],
+    /// Column of the "+" new-session button in each agent pane title.
+    agent_new: [Option<u16>; 2],
 }
 
 type Loc = (PathBuf, usize, usize);
@@ -219,6 +223,7 @@ pub struct App {
     last_disk_check: Instant,
     last_tree_refresh: Instant,
     last_workspace_save: Instant,
+    last_title_check: Instant,
     pub quit: bool,
     pub host_out: Vec<u8>,
 }
@@ -306,6 +311,7 @@ impl App {
             last_disk_check: Instant::now(),
             last_tree_refresh: Instant::now(),
             last_workspace_save: Instant::now(),
+            last_title_check: Instant::now(),
             quit: false,
             host_out: Vec::new(),
             tx,
@@ -380,6 +386,8 @@ impl App {
                 let cwd = a.cwd.map(PathBuf::from).filter(|p| p.is_dir()).unwrap_or_else(|| self.root.clone());
                 let idx = self.push_agent(&a.name, &a.command, cwd.clone());
                 self.agents[idx].session_id = a.session_id;
+                self.agents[idx].title = a.title;
+                self.agents[idx].renamed = a.renamed;
                 if let Some(branch) = a.worktree_branch {
                     self.agents[idx].worktree = Some((cwd, branch));
                 }
@@ -420,6 +428,8 @@ impl App {
                     cwd: (a.cwd != self.root).then(|| a.cwd.to_string_lossy().into_owned()),
                     session_id: a.session_id.clone(),
                     worktree_branch: a.worktree.as_ref().map(|(_, b)| b.clone()),
+                    title: a.title.clone(),
+                    renamed: a.renamed,
                 })
                 .collect(),
             slots: self.slots,
@@ -651,7 +661,17 @@ impl App {
             }
             Bg::Sessions(list) => {
                 if let Mode::Picker(p) = &mut self.mode {
-                    if p.title == "Sessions" {
+                    if p.title == "Past Conversations" {
+                        let items: Vec<Item> = list
+                            .into_iter()
+                            .map(|s| Item::new(format!("{} · {}", s.kind.name(), s.title), sessions::ago(s.modified), Target::Transcript(s.kind, s.id, s.path, s.title)))
+                            .collect();
+                        if items.is_empty() {
+                            p.set_items(vec![Item::new("No past conversations for this project", "start one with Alt+N", Target::Action(Action::NewAgent(AgentKind::Claude)))]);
+                        } else {
+                            p.set_items(items);
+                        }
+                    } else if p.title == "Sessions" {
                         let mut items = session_tab_items(&self.agents);
                         items.extend(list.into_iter().map(|s| {
                             Item::new(format!("↻ {} · {}", s.kind.name(), s.title), sessions::ago(s.modified), Target::Resume(s.kind, s.id))
@@ -701,9 +721,16 @@ impl App {
         let name = self.agents[idx].name.clone();
         match &ev {
             AgentEvent::SessionStart { session_id } => self.agents[idx].session_id = Some(session_id.clone()),
-            AgentEvent::Prompt { .. } => {
+            AgentEvent::Prompt { text } => {
                 if self.agents[idx].hook_working.is_some() {
                     self.agents[idx].hook_working = Some(true);
+                }
+                let a = &mut self.agents[idx];
+                if a.title.is_none() && !a.renamed {
+                    let words: Vec<&str> = text.split_whitespace().filter(|w| !w.starts_with('@')).take(6).collect();
+                    if !words.is_empty() {
+                        a.title = Some(words.join(" "));
+                    }
                 }
             }
             AgentEvent::ToolStart { tool, file, detail } => {
@@ -799,6 +826,20 @@ impl App {
         }
         if self.last_git.elapsed() > Duration::from_secs(3) {
             self.refresh_git();
+        }
+        // Name Claude tabs after their conversation once Claude has titled it.
+        if self.last_title_check.elapsed() > Duration::from_secs(20) {
+            self.last_title_check = Instant::now();
+            for a in self.agents.iter_mut().filter(|a| a.kind == Some(AgentKind::Claude) && !a.renamed && a.started()) {
+                if let Some(id) = &a.session_id {
+                    if let Some(t) = sessions::claude_session_title(&a.cwd, id) {
+                        if a.title.as_ref() != Some(&t) {
+                            a.title = Some(t);
+                            changed = true;
+                        }
+                    }
+                }
+            }
         }
         if self.last_workspace_save.elapsed() > Duration::from_secs(15) {
             self.last_workspace_save = Instant::now();
@@ -967,6 +1008,7 @@ impl App {
             Some(View::Search(v)) => v.handle_key(key),
             Some(View::AgentChanges(v)) => v.handle_key(key),
             Some(View::Compare(v)) => v.handle_key(key),
+            Some(View::Transcript(v)) => v.handle_key(key),
             None => return,
         };
         self.on_view_result(result);
@@ -1003,6 +1045,10 @@ impl App {
                 self.info(m);
                 self.refresh_git();
                 self.last_disk_check = Instant::now() - Duration::from_secs(1);
+            }
+            ViewResult::Resume(kind, id) => {
+                self.view = None;
+                self.accept(Target::Resume(kind, id), "", Kind::Static);
             }
             ViewResult::ReviewTurn(i) => {
                 let changed = match &self.view {
@@ -1259,6 +1305,19 @@ impl App {
             PromptKind::NewFolder => self.create_entry(&input, true),
             PromptKind::Rename => self.rename_entry(&input),
             PromptKind::RenameSymbol => self.rename_symbol(&input),
+            PromptKind::RenameAgent => {
+                let idx = self.active_agent();
+                if let Some(a) = self.agents.get_mut(idx) {
+                    let name = input.trim();
+                    if name.is_empty() {
+                        a.renamed = false;
+                        a.title = None;
+                    } else {
+                        a.renamed = true;
+                        a.title = Some(name.to_string());
+                    }
+                }
+            }
             PromptKind::NewBranch => self.git_op(|r| r.create_branch(input.trim()).map(|_| format!("switched to new branch {}", input.trim()))),
             PromptKind::Commit => {
                 if input.trim().is_empty() {
@@ -1471,6 +1530,10 @@ impl App {
                     self.drag = Drag::TreeDivider;
                 } else if self.split && y == agent_blocks[1].y && inside(agent_blocks[1]) && x < agent_blocks[1].x + 2 {
                     self.drag = Drag::SplitDivider;
+                } else if let Some(slot) = title_slot.filter(|&s| self.rects.agent_new[s].is_some_and(|nx| x >= nx && x < nx + 3)) {
+                    self.active_slot = slot;
+                    let kind = self.agents.get(self.slots[slot]).and_then(|a| a.kind).unwrap_or(AgentKind::Claude);
+                    self.run(Action::NewAgent(kind));
                 } else if let Some(i) = title_slot.and_then(|s| self.rects.agent_closes[s].iter().find(|(cx, _)| *cx == x).map(|c| c.1)) {
                     self.close_agent_at(i);
                 } else if let Some(slot) = title_slot {
@@ -1530,6 +1593,7 @@ impl App {
                             let r = v.click(x, y);
                             self.on_view_result(r);
                         }
+                        Some(View::Transcript(_)) => {}
                         None => {
                             // Clicking another group focuses it. When both groups show the same
                             // doc its stored layout belongs to the previously focused group, so
@@ -1643,6 +1707,7 @@ impl App {
                         Some(View::Search(v)) => v.scroll_by(delta),
                         Some(View::AgentChanges(v)) => v.scroll_by(delta),
                         Some(View::Compare(v)) => v.scroll_by(delta),
+                        Some(View::Transcript(v)) => v.scroll_by(delta),
                         None => {
                             let g = group_at.unwrap_or(self.active_group);
                             if let Some(doc) = self.docs.get_mut(self.groups[g].active) {
@@ -1998,6 +2063,21 @@ impl App {
             }
             Action::RunInBoth => self.pick_pair("Send Same Prompt to Two Agents", |a, b| Action::SendToPair { a, b }),
             Action::SendToPair { a, b } => self.mode = Mode::Prompt { kind: PromptKind::SendToPair(a, b), input: String::new() },
+            Action::RenameAgent => {
+                let idx = self.active_agent();
+                let Some(a) = self.agents.get(idx) else { return };
+                let input = a.title.clone().unwrap_or_else(|| a.name.clone());
+                self.mode = Mode::Prompt { kind: PromptKind::RenameAgent, input };
+            }
+            Action::BrowseHistory => {
+                self.mode = Mode::Picker(Picker::new("Past Conversations", Kind::Static, Vec::new()).ordered());
+                self.info("loading past conversations…");
+                let tx = self.tx.clone();
+                let root = self.root.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(Bg::Sessions(sessions::list(&root)));
+                });
+            }
             Action::Sessions => {
                 self.mode = Mode::Picker(Picker::new("Sessions", Kind::Static, session_tab_items(&self.agents)).ordered());
                 let tx = self.tx.clone();
@@ -2189,6 +2269,11 @@ impl App {
             }
             Target::AgentTab(i) => self.show_agent(i),
             Target::CodeAction(i) => self.apply_code_action(i),
+            Target::Transcript(kind, id, path, title) => {
+                let md = sessions::transcript_markdown(kind, &path);
+                self.view = Some(View::Transcript(views::TranscriptView::new(format!("{} · {title}", kind.name()), kind, id, md)));
+                self.focus = Focus::Editor;
+            }
             Target::Resume(kind, id) => {
                 if let Some(i) = self.agents.iter().position(|a| a.session_id.as_deref() == Some(&id)) {
                     return self.show_agent(i);
@@ -2794,6 +2879,8 @@ fn global_action(c: char) -> Option<Action> {
         'e' => Action::AskMenu,
         'T' => Action::ReopenClosedFile,
         'W' => Action::CloseAgent,
+        'N' => Action::NewAgent(AgentKind::Claude),
+        'H' => Action::BrowseHistory,
         'F' => Action::FormatDocument,
         'E' => Action::RecentFiles,
         'C' => Action::AgentChanges,

@@ -66,6 +66,7 @@ impl App {
             doc_tabs: [Vec::new(), Vec::new()],
             agent_tabs: [Vec::new(), Vec::new()],
             agent_closes: [Vec::new(), Vec::new()],
+            agent_new: [None, None],
         };
 
         let mut cursor = None;
@@ -144,6 +145,7 @@ impl App {
                 View::Search(_) => " ⌕ Search ".to_string(),
                 View::AgentChanges(_) => " ✓ Agent Changes ".to_string(),
                 View::Compare(v) => format!(" ⇄ {} ", v.title),
+                View::Transcript(v) => format!(" » {} ", v.title.chars().take(40).collect::<String>()),
             };
             x += title.chars().count() as u16 + 1;
             spans.push(Span::styled(title, active_style));
@@ -209,6 +211,10 @@ impl App {
                 return None;
             }
             Some(View::Compare(v)) => {
+                v.render(area, buf);
+                return None;
+            }
+            Some(View::Transcript(v)) => {
                 v.render(area, buf);
                 return None;
             }
@@ -305,11 +311,36 @@ impl App {
             let area = self.rects.agents[slot];
             let mut spans = vec![Span::raw(" ")];
             let mut x = block.x + 2;
-            for (i, a) in self.agents.iter().enumerate() {
-                let label = match self.unreviewed.get(&a.name) {
-                    Some(&n) if n > 0 => format!(" {} {} ○{n} ", a.status_glyph(), a.name),
-                    _ => format!(" {} {} ", a.status_glyph(), a.name),
-                };
+            let labels: Vec<String> = self
+                .agents
+                .iter()
+                .map(|a| match self.unreviewed.get(&a.name) {
+                    Some(&n) if n > 0 => format!(" {} {} ○{n} ", a.status_glyph(), a.label()),
+                    _ => format!(" {} {} ", a.status_glyph(), a.label()),
+                })
+                .collect();
+            // Scroll the strip so the pane's agent stays visible; keep room for "+".
+            let avail = block.width.saturating_sub(10) as usize;
+            let tab_w = |i: usize| labels[i].chars().count() + 3;
+            let active = self.slots[slot].min(labels.len().saturating_sub(1));
+            let mut first = 0;
+            while first < active && (first..=active).map(tab_w).sum::<usize>() > avail {
+                first += 1;
+            }
+            if first > 0 {
+                spans.push(Span::styled("‹ ", Style::default().fg(theme::DIM())));
+                x += 2;
+            }
+            let mut used = 0;
+            let mut truncated = false;
+            for (i, a) in self.agents.iter().enumerate().skip(first) {
+                if used + tab_w(i) > avail && i > active {
+                    truncated = true;
+                    break;
+                }
+                used += tab_w(i);
+                let _ = a;
+                let label = labels[i].clone();
                 let w = label.chars().count() as u16;
                 self.rects.agent_tabs[slot].push((x, x + w, i));
                 let style = if i == self.slots[slot] {
@@ -324,6 +355,13 @@ impl App {
                 spans.push(Span::raw("  "));
                 x += w + 3;
             }
+            if truncated {
+                spans.push(Span::styled("› ", Style::default().fg(theme::DIM())));
+                x += 2;
+            }
+            // New session button.
+            self.rects.agent_new[slot] = Some(x);
+            spans.push(Span::styled(" + ", Style::default().fg(theme::ACCENT()).add_modifier(Modifier::BOLD)));
             let slot_focused = self.focus == Focus::Agent && (!self.split || self.active_slot == slot);
             pane(buf, block, Line::from(spans), slot_focused);
             let idx = self.slots[slot];
@@ -374,6 +412,7 @@ impl App {
                     PromptKind::NewFolder => "new folder path",
                     PromptKind::Rename => "rename / move to",
                     PromptKind::RenameSymbol => "rename symbol to",
+                    PromptKind::RenameAgent => "rename agent tab (empty = automatic title)",
                     PromptKind::NewBranch => "new branch name",
                     PromptKind::Commit => "commit message",
                     PromptKind::WorktreeName(_) => "worktree task name",
@@ -396,6 +435,7 @@ impl App {
                         (Focus::Editor, Some(View::Search(v))) => v.status(),
                         (Focus::Editor, Some(View::AgentChanges(v))) => v.status().into(),
                         (Focus::Editor, Some(View::Compare(v))) => v.status().into(),
+                        (Focus::Editor, Some(View::Transcript(v))) => v.status().into(),
                         (Focus::Tree, _) => "↑↓ move  ⏎ open  ← collapse  R refresh  │  Alt+x commands  Alt+o files  Alt+g sessions  Alt+q quit".into(),
                         (Focus::Editor, None) => "^S save  ^F find  F12 definition  Alt+l symbols  │  Alt+s send  Alt+e ask  Alt+r review  Alt+x commands".into(),
                         (Focus::Agent, _) => "Alt+j jump to ref  Alt+? find  drag to copy  Alt+g sessions  Alt+n next  Alt+v split  │  Alt+r review  Alt+x commands".into(),

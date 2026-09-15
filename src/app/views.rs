@@ -23,6 +23,8 @@ pub enum ViewResult {
     /// Files on disk changed (reload docs, refresh git).
     Changed(String),
     ReviewTurn(usize),
+    /// Resume a past conversation in a new agent tab.
+    Resume(crate::actions::AgentKind, String),
     /// Review the unstaged diff of `files` (repo-relative) in the repo at `root`.
     Review { root: PathBuf, title: String, files: Vec<String> },
     ToggleReviewed { agent: String, path: String, version: crate::changes::Version, reviewed: bool },
@@ -533,6 +535,73 @@ impl ActivityView {
                 buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(theme::STATUS_BG()));
             }
             buf.set_stringn(area.x + 1, y, text, area.width.saturating_sub(1) as usize, style);
+        }
+    }
+}
+
+// ------------------------------------------------------------ transcript --
+
+/// Read-only rendering of a past Claude or Codex conversation.
+pub struct TranscriptView {
+    pub title: String,
+    pub kind: crate::actions::AgentKind,
+    pub id: String,
+    markdown: String,
+    cache: Option<(u16, Vec<crate::markdown::MdLine>)>,
+    scroll: usize,
+    height: usize,
+}
+
+impl TranscriptView {
+    pub fn new(title: String, kind: crate::actions::AgentKind, id: String, markdown: String) -> Self {
+        Self { title, kind, id, markdown, cache: None, scroll: 0, height: 20 }
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> ViewResult {
+        let page = self.height.saturating_sub(2).max(1);
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => return ViewResult::Close,
+            KeyCode::Char('r') | KeyCode::Enter => return ViewResult::Resume(self.kind, self.id.clone()),
+            KeyCode::Down | KeyCode::Char('j') => self.scroll += 1,
+            KeyCode::Up | KeyCode::Char('k') => self.scroll = self.scroll.saturating_sub(1),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.scroll += page,
+            KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(page),
+            KeyCode::Home | KeyCode::Char('g') => self.scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => self.scroll = usize::MAX / 2,
+            _ => {}
+        }
+        ViewResult::None
+    }
+
+    pub fn scroll_by(&mut self, delta: isize) {
+        self.scroll = (self.scroll as isize + delta).max(0) as usize;
+    }
+
+    pub fn status(&self) -> &'static str {
+        "↑↓ PgUp/PgDn scroll · r resume this conversation in a new tab · Esc close"
+    }
+
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        if area.width < 20 || area.height < 3 {
+            return;
+        }
+        let body = Rect::new(area.x + 1, area.y, area.width - 2, area.height);
+        if self.cache.as_ref().is_none_or(|(w, _)| *w != body.width) {
+            self.cache = Some((body.width, crate::markdown::render(&self.markdown, body.width as usize)));
+        }
+        let lines = &self.cache.as_ref().unwrap().1;
+        self.height = body.height as usize;
+        self.scroll = self.scroll.min(lines.len().saturating_sub(self.height));
+        for (row, line) in lines.iter().skip(self.scroll).take(self.height).enumerate() {
+            let mut x = body.x;
+            let y = body.y + row as u16;
+            for (text, style) in line {
+                let end = body.x + body.width;
+                if x >= end {
+                    break;
+                }
+                x = buf.set_stringn(x, y, text, (end - x) as usize, *style).0;
+            }
         }
     }
 }

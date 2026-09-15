@@ -96,6 +96,10 @@ pub struct Agent {
     pub session_id: Option<String>,
     /// (worktree path, branch) for agents isolated in a git worktree.
     pub worktree: Option<(PathBuf, String)>,
+    /// Conversation title (first prompt, then Claude's own title) shown on the tab.
+    pub title: Option<String>,
+    /// The user renamed the tab, so automatic titles no longer apply.
+    pub renamed: bool,
     /// Set when hooks report working/idle precisely.
     pub hook_working: Option<bool>,
     started_at: Option<Instant>,
@@ -142,6 +146,8 @@ impl Agent {
             cwd,
             session_id: None,
             worktree: None,
+            title: None,
+            renamed: false,
             hook_working: None,
             started_at: None,
             program: parts.next().unwrap_or_default(),
@@ -283,6 +289,18 @@ impl Agent {
 
     pub fn seen(&mut self) {
         self.attention = None;
+    }
+
+    /// Tab label: the conversation title when known, else the tab name.
+    pub fn label(&self) -> String {
+        match &self.title {
+            Some(t) => {
+                let short: String = t.chars().take(24).collect();
+                let short = if t.chars().count() > 24 { format!("{}…", short.trim_end()) } else { short };
+                if self.renamed { short } else { format!("{}: {short}", self.name) }
+            }
+            None => self.name.clone(),
+        }
     }
 
     pub fn status_glyph(&self) -> &'static str {

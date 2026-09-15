@@ -23,6 +23,7 @@ pub enum Target {
     AgentTab(usize),
     CodeAction(usize),
     Resume(crate::actions::AgentKind, String),
+    Transcript(crate::actions::AgentKind, String, PathBuf, String),
 }
 
 #[derive(Clone, Debug)]

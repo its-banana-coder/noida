@@ -22,6 +22,10 @@ pub struct AgentState {
     pub session_id: Option<String>,
     #[serde(default)]
     pub worktree_branch: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub renamed: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -109,7 +113,7 @@ mod tests {
             agent_pct: 45,
             split: false,
             split_pct: None,
-            agents: vec![AgentState { name: "claude".into(), command: "claude".into(), cwd: None, session_id: Some(uuid_v4()), worktree_branch: None }],
+            agents: vec![AgentState { name: "claude".into(), command: "claude".into(), cwd: None, session_id: Some(uuid_v4()), worktree_branch: None, title: None, renamed: false }],
             slots: [0, 0],
             expanded: vec![],
         };

@@ -115,6 +115,8 @@ pub enum Action {
     Handoff { from: usize, to: usize },
     FixFindings { reviewer: usize, fixer: usize },
     AgentChanges,
+    RenameAgent,
+    BrowseHistory,
     CompareAgents,
     ComparePair { a: usize, b: usize },
     RunInBoth,
@@ -165,6 +167,8 @@ const IDS: &[(Action, &str)] = &[
     (Action::CommandPalette, "command_palette"),
     (Action::SplitEditor, "split_editor"),
     (Action::AgentChanges, "agent_changes"),
+    (Action::RenameAgent, "rename_agent"),
+    (Action::BrowseHistory, "browse_history"),
     (Action::CompareAgents, "compare_agents"),
     (Action::RunInBoth, "send_prompt_to_two_agents"),
     (Action::AgentFind, "agent_find"),
@@ -348,6 +352,8 @@ impl Action {
             Action::AgentHistory => s("Agent: History", ""),
             Action::Handoff { .. } | Action::FixFindings { .. } | Action::ComparePair { .. } | Action::SendToPair { .. } => None,
             Action::AgentChanges => s("Agent: Changed Files…", "Alt+C"),
+            Action::RenameAgent => s("Agent: Rename Tab…", ""),
+            Action::BrowseHistory => s("Agent: Browse Past Conversations…", "Alt+H"),
             Action::CompareAgents => s("Agent: Compare Two Agents…", ""),
             Action::RunInBoth => s("Agent: Send Same Prompt to Two Agents…", ""),
             Action::GoToSymbol => s("Go to Symbol in File…", "Alt+l"),
@@ -397,7 +403,7 @@ impl Action {
         let mut v = vec![
             QuickOpen, SearchWorkspace, ReplaceWorkspace, GoToSymbol, Hover, RenameSymbol, CodeActions, FormatDocument, FormatSelection, OrganizeImports, GoToProjectSymbol, GoToDefinition, FindReferences, Problems, FixProblem,
             ReviewChanges, AcceptAllChanges, SwitchBranch, NewBranch, Commit, GitLog, FileHistory,
-            Sessions, AgentActivity, AgentHistory, AgentChanges, CompareAgents, RunInBoth, ToggleShareContext, AskMenu, SendSelection, SendFile, SendSymbol,
+            Sessions, BrowseHistory, RenameAgent, AgentActivity, AgentHistory, AgentChanges, CompareAgents, RunInBoth, ToggleShareContext, AskMenu, SendSelection, SendFile, SendSymbol,
         ];
         v.extend(self::Ask::ALL.map(Action::Ask));
         v.extend([

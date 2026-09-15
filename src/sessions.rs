@@ -16,6 +16,8 @@ pub struct PastSession {
     pub id: String,
     pub title: String,
     pub modified: SystemTime,
+    /// Transcript file, for browsing the conversation.
+    pub path: PathBuf,
 }
 
 impl PastSession {
@@ -64,7 +66,7 @@ fn claude_sessions(home: &Path, cwd: &Path) -> Vec<PastSession> {
         .filter_map(|(modified, path)| {
             let id = path.file_stem()?.to_string_lossy().into_owned();
             let title = claude_title(&path)?;
-            Some(PastSession { kind: AgentKind::Claude, id, title, modified })
+            Some(PastSession { kind: AgentKind::Claude, id, title, modified, path })
         })
         .collect()
 }
@@ -103,7 +105,7 @@ fn codex_sessions(home: &Path, cwd: &Path) -> Vec<PastSession> {
         .take(300)
         .filter_map(|(modified, path)| {
             let (id, session_cwd, title) = codex_meta(&path)?;
-            (session_cwd == cwd).then(|| PastSession { kind: AgentKind::Codex, id, title, modified })
+            (session_cwd == cwd).then(|| PastSession { kind: AgentKind::Codex, id, title, modified, path })
         })
         .take(100)
         .collect()
@@ -144,6 +146,106 @@ fn codex_meta(path: &Path) -> Option<(String, PathBuf, String)> {
         }
     }
     Some((id, cwd, "(no prompt)".into()))
+}
+
+/// Title of a Claude session (custom or AI-generated), for naming its tab.
+pub fn claude_session_title(cwd: &Path, id: &str) -> Option<String> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    claude_title(&claude_project_dir(&home, cwd).join(format!("{id}.jsonl")))
+}
+
+/// Renders a transcript as Markdown: prompts, replies and compact tool steps.
+pub fn transcript_markdown(kind: AgentKind, path: &Path) -> String {
+    let mut buf = Vec::new();
+    if File::open(path).and_then(|f| f.take(8 * 1024 * 1024).read_to_end(&mut buf)).is_err() {
+        return format!("Could not read `{}`.", path.display());
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let mut out = String::new();
+    let mut last_role = "";
+    let mut push = |role: &'static str, body: &str, out: &mut String| {
+        let body = body.trim();
+        if body.is_empty() {
+            return;
+        }
+        if role != last_role {
+            let heading = match role {
+                "you" => "### You",
+                "agent" => if kind == AgentKind::Codex { "### Codex" } else { "### Claude" },
+                _ => "",
+            };
+            if !heading.is_empty() {
+                out.push_str(&format!("\n{heading}\n\n"));
+            }
+            last_role = role;
+        }
+        out.push_str(body);
+        out.push_str("\n\n");
+    };
+    let tool_line = |name: &str, input: &Value| -> String {
+        let detail = ["file_path", "command", "pattern", "path", "url", "description", "query"]
+            .iter()
+            .find_map(|k| input.get(*k).and_then(Value::as_str))
+            .map(|d| one_line(d))
+            .unwrap_or_default();
+        format!("- ⚙ **{name}** `{detail}`")
+    };
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        match kind {
+            AgentKind::Codex => {
+                let p = &v["payload"];
+                match (p["type"].as_str(), p["role"].as_str()) {
+                    (Some("message"), Some(role @ ("user" | "assistant"))) => {
+                        let body: Vec<&str> = p["content"].as_array().map(|c| c.iter().filter_map(|x| x["text"].as_str()).filter(|t| is_real_prompt(t)).collect()).unwrap_or_default();
+                        push(if role == "user" { "you" } else { "agent" }, &body.join("\n\n"), &mut out);
+                    }
+                    (Some("function_call"), _) => {
+                        let args: Value = p["arguments"].as_str().and_then(|a| serde_json::from_str(a).ok()).unwrap_or(Value::Null);
+                        let name = p["name"].as_str().unwrap_or("tool");
+                        let cmd = args["command"].as_array().map(|c| c.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "));
+                        let line = match cmd {
+                            Some(c) => format!("- ⚙ **{name}** `{}`", one_line(&c)),
+                            None => tool_line(name, &args),
+                        };
+                        push("agent", &line, &mut out);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {
+                if v["isMeta"].as_bool() == Some(true) || v["isSidechain"].as_bool() == Some(true) {
+                    continue;
+                }
+                let content = &v["message"]["content"];
+                match v["type"].as_str() {
+                    Some("user") => {
+                        if let Some(t) = content.as_str().filter(|t| is_real_prompt(t)) {
+                            push("you", t, &mut out);
+                        } else if let Some(items) = content.as_array() {
+                            let texts: Vec<&str> = items.iter().filter(|i| i["type"] == "text").filter_map(|i| i["text"].as_str()).filter(|t| is_real_prompt(t)).collect();
+                            push("you", &texts.join("\n\n"), &mut out);
+                        }
+                    }
+                    Some("assistant") => {
+                        for item in content.as_array().into_iter().flatten() {
+                            match item["type"].as_str() {
+                                Some("text") => push("agent", item["text"].as_str().unwrap_or(""), &mut out),
+                                Some("tool_use") => push("agent", &tool_line(item["name"].as_str().unwrap_or("tool"), &item["input"]), &mut out),
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if out.trim().is_empty() {
+        "This conversation has no messages to show.".into()
+    } else {
+        out
+    }
 }
 
 fn is_real_prompt(p: &str) -> bool {
@@ -217,6 +319,10 @@ mod tests {
         assert_eq!(codex.len(), 1);
         assert_eq!((codex[0].id.as_str(), codex[0].title.as_str()), ("x1", "add caching"));
         assert_eq!(codex[0].resume_command(), "codex resume x1");
+        let md = transcript_markdown(AgentKind::Claude, &claude[0].path);
+        assert!(md.contains("### You") && md.contains("the login"), "{md}");
+        let cx = transcript_markdown(AgentKind::Codex, &codex[0].path);
+        assert!(cx.contains("add caching") && !cx.contains("environment_context"), "{cx}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
