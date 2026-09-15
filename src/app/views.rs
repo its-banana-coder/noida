@@ -1,5 +1,6 @@
 //! Full-pane views shown in place of the editor: change review (diffs with
-//! accept/reject per hunk), agent activity timelines and search results.
+//! accept/reject per hunk, staged changes, read-only commits), agent activity
+//! timelines and search results.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -27,16 +28,31 @@ pub enum ViewResult {
 // ---------------------------------------------------------------- review --
 
 enum Row {
+    Meta(usize),
     File(usize),
     Hunk(usize, usize),
     Line(usize, usize, usize),
     Blank,
 }
 
+/// What a `ReviewView` shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReviewMode {
+    /// Working tree changes: accept (stage) or reject (revert).
+    Unstaged,
+    /// The index: unstage hunks or files.
+    Staged,
+    /// A read-only commit, limited to `paths` unless empty.
+    Commit { hash: String, paths: Vec<String> },
+}
+
 pub struct ReviewView {
-    pub title: String,
+    title: String,
     repo: Repo,
+    mode: ReviewMode,
     only: Option<Vec<String>>,
+    /// Commit metadata shown above the diff (commit mode only).
+    meta: Vec<String>,
     files: Vec<FileDiff>,
     rows: Vec<Row>,
     /// Flat list of (file, hunk-or-file-level) selection targets.
@@ -50,10 +66,21 @@ pub struct ReviewView {
 
 impl ReviewView {
     pub fn new(title: String, repo: Repo, only: Option<Vec<String>>) -> Result<Self, String> {
+        Self::with_mode(title, repo, ReviewMode::Unstaged, only)
+    }
+
+    /// Read-only view of a commit's diff (limited to `paths` unless empty).
+    pub fn commit(title: String, repo: Repo, hash: String, paths: Vec<String>) -> Result<Self, String> {
+        Self::with_mode(title, repo, ReviewMode::Commit { hash, paths }, None)
+    }
+
+    fn with_mode(title: String, repo: Repo, mode: ReviewMode, only: Option<Vec<String>>) -> Result<Self, String> {
         let mut v = Self {
             title,
             repo,
+            mode,
             only,
+            meta: Vec::new(),
             files: Vec::new(),
             rows: Vec::new(),
             targets: Vec::new(),
@@ -67,18 +94,38 @@ impl ReviewView {
         Ok(v)
     }
 
+    pub fn title(&self) -> String {
+        match self.mode {
+            ReviewMode::Unstaged => format!("{} · Unstaged", self.title),
+            ReviewMode::Staged => format!("{} · Staged", self.title),
+            ReviewMode::Commit { .. } => self.title.clone(),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.files.is_empty()
     }
 
     pub fn reload(&mut self) -> Result<(), String> {
-        let mut files = self.repo.diff().map_err(|e| e.to_string())?;
+        let mut files = match &self.mode {
+            ReviewMode::Unstaged => self.repo.diff(),
+            ReviewMode::Staged => self.repo.diff_staged(),
+            ReviewMode::Commit { hash, paths } => self.repo.show(hash, paths).map(|s| {
+                self.meta = s.meta;
+                s.files
+            }),
+        }
+        .map_err(|e| e.to_string())?;
         if let Some(only) = &self.only {
             files.retain(|f| only.iter().any(|o| o == &f.path));
         }
         self.files = files;
         self.rows.clear();
         self.targets.clear();
+        if !self.meta.is_empty() {
+            self.rows.extend((0..self.meta.len()).map(Row::Meta));
+            self.rows.push(Row::Blank);
+        }
         for (fi, f) in self.files.iter().enumerate() {
             self.rows.push(Row::File(fi));
             if f.hunks.is_empty() {
@@ -116,13 +163,48 @@ impl ReviewView {
         }
     }
 
+    fn toggle_staged(&mut self) -> ViewResult {
+        let (mode, label) = match self.mode {
+            ReviewMode::Unstaged => (ReviewMode::Staged, "staged"),
+            ReviewMode::Staged => (ReviewMode::Unstaged, "unstaged"),
+            ReviewMode::Commit { .. } => return self.wrong_mode(),
+        };
+        self.mode = mode;
+        self.selected = 0;
+        self.scroll = 0;
+        self.confirm = None;
+        match self.reload() {
+            Ok(()) => ViewResult::Message(format!("showing {label} changes"), false),
+            Err(e) => ViewResult::Message(e, true),
+        }
+    }
+
+    /// Hint for keys that don't apply in the current mode.
+    fn wrong_mode(&self) -> ViewResult {
+        let hint = match self.mode {
+            ReviewMode::Unstaged => "u/U unstage in the staged view: press s to switch",
+            ReviewMode::Staged => "staged view: u unstage hunk · U unstage file · s back to unstaged",
+            ReviewMode::Commit { .. } => "commit view is read-only: Enter opens the file · Esc closes",
+        };
+        ViewResult::Message(hint.into(), false)
+    }
+
     fn apply(&mut self, op: HunkOp, whole_file: bool) -> ViewResult {
+        let allowed = match self.mode {
+            ReviewMode::Unstaged => op != HunkOp::Unstage,
+            ReviewMode::Staged => op == HunkOp::Unstage,
+            ReviewMode::Commit { .. } => false,
+        };
+        if !allowed {
+            return self.wrong_mode();
+        }
         let Some(&(fi, hi)) = self.targets.get(self.selected) else { return ViewResult::None };
         let file = self.files[fi].clone();
         let result = match (whole_file, hi) {
             (true, _) | (false, None) => match op {
                 HunkOp::Stage => self.repo.stage_file(&file.path),
                 HunkOp::Revert => self.repo.revert_file(&file),
+                HunkOp::Unstage => self.repo.unstage_file(&file.path),
             },
             (false, Some(h)) => self.repo.apply_hunk(&file, h, op),
         };
@@ -130,7 +212,11 @@ impl ReviewView {
             return ViewResult::Message(format!("{e:#}"), true);
         }
         let _ = self.reload();
-        let verb = if op == HunkOp::Stage { "accepted" } else { "rejected" };
+        let verb = match op {
+            HunkOp::Stage => "accepted",
+            HunkOp::Revert => "rejected",
+            HunkOp::Unstage => "unstaged",
+        };
         let what = if whole_file || hi.is_none() { file.path.clone() } else { format!("hunk in {}", file.path) };
         ViewResult::Changed(format!("{verb} {what}"))
     }
@@ -166,6 +252,10 @@ impl ReviewView {
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(self.height.saturating_sub(2)),
             KeyCode::Char('a') => return self.apply(HunkOp::Stage, false),
             KeyCode::Char('A') => return self.apply(HunkOp::Stage, true),
+            KeyCode::Char('u') => return self.apply(HunkOp::Unstage, false),
+            KeyCode::Char('U') => return self.apply(HunkOp::Unstage, true),
+            KeyCode::Char('s') => return self.toggle_staged(),
+            KeyCode::Char('x' | 'X') if self.mode != ReviewMode::Unstaged => return self.wrong_mode(),
             KeyCode::Char('x') => {
                 if !self.confirmed('x') {
                     return ViewResult::Message("press x again to discard this hunk from disk".into(), true);
@@ -187,7 +277,11 @@ impl ReviewView {
             KeyCode::Enter => {
                 if let Some(&(fi, hi)) = self.targets.get(self.selected) {
                     let line = hi.map_or(1, |h| self.files[fi].hunks[h].new_start.max(1));
-                    return ViewResult::Open(self.repo.root.join(&self.files[fi].path), line);
+                    let path = self.repo.root.join(&self.files[fi].path);
+                    if matches!(self.mode, ReviewMode::Commit { .. }) && !path.is_file() {
+                        return ViewResult::Message(format!("{} no longer exists in the working tree", self.files[fi].path), true);
+                    }
+                    return ViewResult::Open(path, line);
                 }
             }
             _ => {}
@@ -204,7 +298,7 @@ impl ReviewView {
         let target = self.rows.get(row).and_then(|r| match r {
             Row::File(f) => self.targets.iter().position(|&(tf, _)| tf == *f),
             Row::Hunk(f, h) | Row::Line(f, h, _) => self.targets.iter().position(|&t| t == (*f, Some(*h))),
-            Row::Blank => None,
+            Row::Meta(_) | Row::Blank => None,
         });
         if let Some(t) = target {
             self.selected = t;
@@ -212,15 +306,25 @@ impl ReviewView {
     }
 
     pub fn status(&self) -> String {
-        let hunks = self.targets.len();
-        format!("{} files · {} hunks   a accept · x reject · A/X whole file · Enter open · Tab next file · r refresh · Esc close", self.files.len(), hunks)
+        let counts = format!("{} files · {} hunks", self.files.len(), self.targets.len());
+        let keys = match self.mode {
+            ReviewMode::Unstaged => "a accept · x reject · A/X whole file · s staged · Enter open · Tab next file · r refresh · Esc close",
+            ReviewMode::Staged => "u unstage · U unstage file · s unstaged · Enter open · Tab next file · r refresh · Esc close",
+            ReviewMode::Commit { .. } => "read-only · Enter open file · Tab next file · Esc close",
+        };
+        format!("{counts}   {keys}")
     }
 
     pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
         self.area = area;
         self.height = area.height as usize;
-        if self.files.is_empty() {
-            buf.set_string(area.x + 2, area.y + 1, "No unstaged changes. Everything is accepted.", Style::default().fg(theme::DIM()));
+        if self.files.is_empty() && self.meta.is_empty() {
+            let msg = match self.mode {
+                ReviewMode::Unstaged => "No unstaged changes. Everything is accepted. Press s for staged changes.",
+                ReviewMode::Staged => "No staged changes. Press s for unstaged changes.",
+                ReviewMode::Commit { .. } => "This commit has no changes.",
+            };
+            buf.set_stringn(area.x + 2, area.y + 1, msg, area.width.saturating_sub(2) as usize, Style::default().fg(theme::DIM()));
             return;
         }
         let sel = self.targets.get(self.selected).copied();
@@ -229,11 +333,27 @@ impl ReviewView {
             let full = Rect::new(area.x, y, area.width, 1);
             let w = area.width as usize;
             match row {
+                Row::Meta(mi) => {
+                    let text = &self.meta[*mi];
+                    let style = if *mi == 0 {
+                        Style::default().fg(theme::ACCENT()).add_modifier(Modifier::BOLD)
+                    } else if text.starts_with("Author:") || text.starts_with("Date:") {
+                        Style::default().fg(theme::DIM())
+                    } else {
+                        Style::default().fg(theme::FG())
+                    };
+                    buf.set_stringn(area.x + 1, y, text.replace('\t', "    "), w.saturating_sub(1), style);
+                }
                 Row::File(fi) => {
                     let f = &self.files[*fi];
                     let (add, del) = f.counts();
                     let selected = sel == Some((*fi, None));
-                    let tag = if f.untracked { "new" } else if f.binary { "binary" } else { "" };
+                    let tag = match f.renamed_from() {
+                        _ if f.untracked => "new".to_string(),
+                        _ if f.binary => "binary".to_string(),
+                        Some(from) => format!("renamed from {from}"),
+                        None => String::new(),
+                    };
                     let style = Style::default().fg(theme::FG()).bg(if selected { theme::SELECT() } else { theme::STATUS_BG() }).add_modifier(Modifier::BOLD);
                     buf.set_style(full, style);
                     let (x, _) = buf.set_stringn(area.x + 1, y, &f.path, w.saturating_sub(16), style);

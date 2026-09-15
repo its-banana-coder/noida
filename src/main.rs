@@ -47,7 +47,7 @@ KEYS (Alt+x opens the command palette with everything):
     Alt+s / S   send selection / file to the agent   Alt+e  ask agent to explain
     Alt+g       sessions: switch tabs or resume past Claude/Codex conversations
     Alt+n       next agent tab       Alt+v split agents     Alt+w other pane
-    Alt+r       review changes (a accept hunk, x reject)    Alt+a agent activity
+    Alt+r       review changes (a accept, x reject, s staged, u unstage)   Alt+a activity
     Alt+l / k   symbols in file / project    F12 definition  Shift+F12 references
     Alt+i       problems             Alt+F  ask agent to fix the problem at cursor
     Alt+, Alt+. resize agent pane    Alt+z zoom    Alt+- back    Alt+q quit

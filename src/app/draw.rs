@@ -139,7 +139,7 @@ impl App {
         let active_style = Style::default().fg(theme::HINT_FG()).bg(theme::BORDER_FOCUS()).add_modifier(Modifier::BOLD);
         if let Some(view) = &self.view {
             let title = match view {
-                View::Review(v) => format!(" ± {} ", v.title),
+                View::Review(v) => format!(" ± {} ", v.title()),
                 View::Activity(v) => format!(" ⏱ {} ", v.title),
                 View::Search(_) => " ⌕ Search ".to_string(),
             };

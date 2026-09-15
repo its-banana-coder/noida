@@ -1,5 +1,5 @@
 //! Thin wrapper over the `git` CLI: status, diffs, hunk staging/reverting,
-//! branches and worktrees.
+//! commit log and file history, branches and worktrees.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -80,6 +80,10 @@ pub struct FileDiff {
 }
 
 impl FileDiff {
+    pub fn renamed_from(&self) -> Option<&str> {
+        self.header.iter().find_map(|l| l.strip_prefix("rename from "))
+    }
+
     pub fn counts(&self) -> (usize, usize) {
         self.hunks.iter().fold((0, 0), |(a, d), h| {
             let (ha, hd) = h.counts();
@@ -92,7 +96,31 @@ impl FileDiff {
 pub enum HunkOp {
     Stage,
     Revert,
+    /// Move a staged hunk back out of the index.
+    Unstage,
 }
+
+/// One entry of `git log`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Commit {
+    pub hash: String,
+    pub short: String,
+    pub subject: String,
+    pub author: String,
+    /// Relative date, e.g. "3 days ago".
+    pub date: String,
+    /// Path of the file at this commit (file history only; follows renames).
+    pub path: Option<String>,
+}
+
+/// A commit's metadata header and its diff.
+pub struct CommitShow {
+    pub meta: Vec<String>,
+    pub files: Vec<FileDiff>,
+}
+
+const LOG_FORMAT: &str = "--format=%x1e%H%x1f%h%x1f%s%x1f%an%x1f%ar";
+pub const LOG_LIMIT: usize = 300;
 
 impl Repo {
     pub fn discover(path: &Path) -> Option<Repo> {
@@ -186,11 +214,20 @@ impl Repo {
         Ok(files)
     }
 
+    /// Changes staged in the index (`git diff --cached`).
+    pub fn diff_staged(&self) -> Result<Vec<FileDiff>> {
+        let raw = self.git(&["diff", "--cached", "--no-color", "--no-ext-diff", "-U3"])?;
+        let mut files = parse_diff(&raw);
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(files)
+    }
+
     pub fn apply_hunk(&self, file: &FileDiff, hunk: usize, op: HunkOp) -> Result<()> {
         if file.untracked || file.binary {
             return match op {
                 HunkOp::Stage => self.stage_file(&file.path),
                 HunkOp::Revert => self.revert_file(file),
+                HunkOp::Unstage => self.unstage_file(&file.path),
             };
         }
         let h = file.hunks.get(hunk).context("no such hunk")?;
@@ -205,12 +242,22 @@ impl Repo {
         match op {
             HunkOp::Stage => self.git_stdin(&["apply", "--cached", "--whitespace=nowarn", "-"], &patch)?,
             HunkOp::Revert => self.git_stdin(&["apply", "-R", "--whitespace=nowarn", "-"], &patch)?,
+            HunkOp::Unstage => self.git_stdin(&["apply", "--cached", "-R", "--whitespace=nowarn", "-"], &patch)?,
         };
         Ok(())
     }
 
     pub fn stage_file(&self, path: &str) -> Result<()> {
         self.git(&["add", "--", path]).map(drop)
+    }
+
+    /// Unstage a whole file, keeping the working tree as is.
+    pub fn unstage_file(&self, path: &str) -> Result<()> {
+        if self.git(&["restore", "--staged", "--", path]).is_ok() {
+            return Ok(());
+        }
+        // Older git without `restore`, or a repo without commits yet.
+        self.git(&["reset", "-q", "--", path]).or_else(|_| self.git(&["rm", "-q", "--cached", "--", path])).map(drop)
     }
 
     pub fn revert_file(&self, file: &FileDiff) -> Result<()> {
@@ -269,6 +316,40 @@ impl Repo {
 
     pub fn create_branch(&self, branch: &str) -> Result<()> {
         self.git(&["switch", "-c", branch]).map(drop)
+    }
+
+    /// Most recent commits on HEAD, newest first.
+    pub fn log(&self, limit: usize) -> Result<Vec<Commit>> {
+        let n = format!("-n{limit}");
+        Ok(parse_log(&self.git(&["log", &n, LOG_FORMAT])?))
+    }
+
+    /// Commits touching `path` (relative to the root), following renames.
+    pub fn file_history(&self, path: &str, limit: usize) -> Result<Vec<Commit>> {
+        let n = format!("-n{limit}");
+        Ok(parse_log(&self.git(&["log", "--follow", "--name-only", &n, LOG_FORMAT, "--", path])?))
+    }
+
+    /// Metadata and diff of a commit, limited to `paths` unless empty. Pass
+    /// both names of a renamed file so the rename is detected.
+    pub fn show(&self, hash: &str, paths: &[String]) -> Result<CommitShow> {
+        let format = "--format=commit %H%nAuthor: %an <%ae>%nDate:   %ad%n%n%w(0,4,4)%B%x1e";
+        let mut args = vec!["show", "--no-color", "--no-ext-diff", "-U3", "-M", "--diff-merges=first-parent", format, hash];
+        if !paths.is_empty() {
+            args.push("--");
+            args.extend(paths.iter().map(String::as_str));
+        }
+        let raw = match self.git(&args) {
+            Ok(raw) => raw,
+            Err(_) => {
+                // git < 2.31 has no --diff-merges.
+                args.retain(|a| *a != "--diff-merges=first-parent");
+                self.git(&args)?
+            }
+        };
+        let (meta, diff) = raw.split_once('\x1e').unwrap_or((raw.as_str(), ""));
+        let meta = meta.trim_end().lines().map(str::to_string).collect();
+        Ok(CommitShow { meta, files: parse_diff(diff) })
     }
 
     pub fn commit(&self, message: &str) -> Result<String> {
@@ -374,6 +455,25 @@ pub fn parse_diff(raw: &str) -> Vec<FileDiff> {
     files
 }
 
+/// Parses `git log` output made with `LOG_FORMAT` (optionally `--name-only`).
+pub fn parse_log(raw: &str) -> Vec<Commit> {
+    raw.split('\x1e')
+        .filter_map(|record| {
+            let mut lines = record.lines();
+            let mut fields = lines.next()?.split('\x1f').map(str::to_string);
+            let commit = Commit {
+                hash: fields.next()?,
+                short: fields.next()?,
+                subject: fields.next()?,
+                author: fields.next()?,
+                date: fields.next()?,
+                path: lines.map(str::trim).find(|l| !l.is_empty()).map(str::to_string),
+            };
+            (!commit.hash.is_empty()).then_some(commit)
+        })
+        .collect()
+}
+
 fn untracked_diff(root: &Path, path: &str) -> FileDiff {
     let bytes = std::fs::read(root.join(path)).unwrap_or_default();
     let binary = bytes[..bytes.len().min(8000)].contains(&0);
@@ -453,6 +553,85 @@ mod tests {
 
         repo.revert_file(&diff[1]).unwrap();
         assert!(!dir.0.join("new.txt").exists());
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        assert!(Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().status.success(), "{args:?}");
+    }
+
+    #[test]
+    fn staged_diff_unstage_roundtrip() {
+        let (dir, repo) = repo();
+        std::fs::write(dir.0.join("a.txt"), "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n").unwrap();
+        std::fs::write(dir.0.join("new.txt"), "hello\n").unwrap();
+        repo.stage_all().unwrap();
+        assert!(repo.diff().unwrap().is_empty());
+
+        let staged = repo.diff_staged().unwrap();
+        assert_eq!(staged.iter().map(|f| (f.path.as_str(), f.hunks.len())).collect::<Vec<_>>(), [("a.txt", 2), ("new.txt", 1)]);
+
+        // Unstage the second hunk of a.txt: it moves back to the unstaged diff.
+        repo.apply_hunk(&staged[0], 1, HunkOp::Unstage).unwrap();
+        let staged_now = repo.diff_staged().unwrap();
+        assert_eq!(staged_now[0].hunks.len(), 1);
+        assert!(staged_now[0].hunks[0].lines.contains(&"+ONE".to_string()));
+        let unstaged = repo.diff().unwrap();
+        assert_eq!((unstaged[0].path.as_str(), unstaged[0].hunks.len()), ("a.txt", 1));
+        assert!(unstaged[0].hunks[0].lines.contains(&"+TEN".to_string()));
+        // The working tree is untouched.
+        assert!(std::fs::read_to_string(dir.0.join("a.txt")).unwrap().ends_with("TEN\n"));
+
+        // Unstaging the new file's only hunk makes it untracked again; whole-file unstage clears the rest.
+        repo.apply_hunk(&staged_now[1], 0, HunkOp::Unstage).unwrap();
+        assert_eq!(repo.status().unwrap().files[&dir.0.join("new.txt")], FileState::Untracked);
+        repo.unstage_file("a.txt").unwrap();
+        assert!(repo.diff_staged().unwrap().is_empty());
+        assert_eq!(repo.diff().unwrap()[0].hunks.len(), 2);
+    }
+
+    #[test]
+    fn parses_log_records() {
+        let raw = "\x1eaaaa\x1faa\x1fFix: a|b\x1fAnn\x1f2 days ago\n\x1ebbbb\x1fbb\x1fInit\x1fBob\x1f3 weeks ago\n\nsrc/old.rs\n";
+        let log = parse_log(raw);
+        assert_eq!(log.len(), 2);
+        assert_eq!((log[0].short.as_str(), log[0].subject.as_str(), log[0].author.as_str(), log[0].date.as_str()), ("aa", "Fix: a|b", "Ann", "2 days ago"));
+        assert_eq!(log[0].path, None);
+        assert_eq!((log[1].hash.as_str(), log[1].path.as_deref()), ("bbbb", Some("src/old.rs")));
+        assert!(parse_log("").is_empty());
+    }
+
+    #[test]
+    fn log_show_and_file_history() {
+        let (dir, repo) = repo();
+        std::fs::write(dir.0.join("a.txt"), "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n").unwrap();
+        std::fs::write(dir.0.join("b.txt"), "b\n").unwrap();
+        git(&dir.0, &["add", "."]);
+        git(&dir.0, &["commit", "-q", "-m", "shout\n\nlonger body"]);
+        git(&dir.0, &["mv", "a.txt", "renamed.txt"]);
+        git(&dir.0, &["commit", "-q", "-m", "rename"]);
+
+        let log = repo.log(LOG_LIMIT).unwrap();
+        assert_eq!(log.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["rename", "shout", "init"]);
+        assert_eq!(log[0].author, "t");
+
+        let show = repo.show(&log[1].hash, &[]).unwrap();
+        assert!(show.meta[0].starts_with("commit ") && show.meta.iter().any(|l| l.starts_with("Author: t <t@t>")));
+        assert!(show.meta.iter().any(|l| l.trim() == "longer body"));
+        assert_eq!(show.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["a.txt", "b.txt"]);
+        assert!(show.files[0].hunks[0].lines.contains(&"+ONE".to_string()));
+
+        let hist = repo.file_history("renamed.txt", LOG_LIMIT).unwrap();
+        assert_eq!(hist.iter().map(|c| (c.subject.as_str(), c.path.as_deref())).collect::<Vec<_>>(), [
+            ("rename", Some("renamed.txt")),
+            ("shout", Some("a.txt")),
+            ("init", Some("a.txt")),
+        ]);
+        let only = repo.show(&hist[1].hash, &["a.txt".into()]).unwrap();
+        assert_eq!(only.files.len(), 1);
+        assert_eq!(only.files[0].path, "a.txt");
+        let renamed = repo.show(&hist[0].hash, &["renamed.txt".into(), "a.txt".into()]).unwrap();
+        assert_eq!(renamed.files.len(), 1);
+        assert_eq!((renamed.files[0].path.as_str(), renamed.files[0].renamed_from()), ("renamed.txt", Some("a.txt")));
     }
 
     #[test]
