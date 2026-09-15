@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NOIDA — a terminal IDE built around your coding agents</title>
+<meta name="description" content="A lightweight replacement for heavy IDEs. File tree, editor, LSP and git review next to your real Claude Code or Codex session. Every file:line the agent prints is clickable.">
+<meta property="og:title" content="NOIDA — a terminal IDE built around your coding agents">
+<meta property="og:description" content="Every file:line your agent prints is one click from the code. ~20 MB of RAM, in your terminal.">
+<meta property="og:image" content="https://its-banana-coder.github.io/noida/screenshot.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231E1E2E'/><path d='M8 23V9l16 14V9' stroke='%23CBA6F7' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,700;12..96,800&family=Martian+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #EDEFF5;
+    --paper-deep: #E2E5EE;
+    --ink: #1B1D2B;
+    --slate: #535870;
+    --rule: #CDD1DE;
+    --mauve: #7A2FE0;
+    --mauve-soft: #E6DAFB;
+    /* NOIDA's own terminal palette */
+    --t-bg: #1E1E2E;
+    --t-panel: #181825;
+    --t-fg: #CDD6F4;
+    --t-dim: #6C7086;
+    --t-border: #45475A;
+    --t-focus: #CBA6F7;
+    --t-yellow: #F9E2AF;
+    --t-teal: #94E2D5;
+    --t-blue: #89B4FA;
+    --t-green: #A6E3A1;
+    --t-red: #F38BA8;
+    --t-flash: #584A2A;
+    --sans: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+    --mono: "Martian Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 400 18px/1.6 var(--sans);
+    font-optical-sizing: auto;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--mauve); text-underline-offset: 3px; text-decoration-thickness: 1.5px; }
+  a:hover { text-decoration-thickness: 2.5px; }
+  :focus-visible { outline: 3px solid var(--mauve); outline-offset: 3px; border-radius: 4px; }
+  .wrap { width: min(1180px, 100% - 48px); margin-inline: auto; }
+  .prose { max-width: 62ch; }
+
+  /* ---------- nav ---------- */
+  nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 22px 0;
+  }
+  .mark { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 20px; letter-spacing: -0.01em; color: var(--ink); text-decoration: none; }
+  .mark svg { width: 28px; height: 28px; }
+  nav ul { display: flex; gap: 28px; list-style: none; margin: 0; padding: 0; font-size: 16px; }
+  nav ul a { color: var(--slate); text-decoration: none; }
+  nav ul a:hover { color: var(--ink); }
+  nav .gh { color: var(--ink); font-weight: 500; }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 56px 0 28px; }
+  h1 {
+    font-size: clamp(44px, 7.4vw, 104px);
+    line-height: 0.94;
+    letter-spacing: -0.035em;
+    font-weight: 800;
+    margin: 0;
+    max-width: 13ch;
+  }
+  .hero .lede {
+    font-size: clamp(19px, 2vw, 23px);
+    line-height: 1.5;
+    color: var(--slate);
+    margin: 28px 0 0;
+    max-width: 50ch;
+  }
+  .hero-row { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 40px; }
+  .fact { text-align: right; color: var(--slate); font-size: 15px; line-height: 1.4; padding-bottom: 8px; }
+  .fact strong { display: block; color: var(--ink); font-size: 44px; line-height: 1; font-weight: 700; letter-spacing: -0.03em; }
+
+  /* ---------- terminal replica ---------- */
+  .stage { margin: 44px 0 0; position: relative; }
+  .term {
+    background: var(--t-bg);
+    color: var(--t-fg);
+    border-radius: 14px;
+    font: 400 13px/1.7 var(--mono);
+    padding: 12px 12px 0;
+    box-shadow: 0 1px 0 #fff inset, 0 30px 60px -30px rgba(27, 29, 43, 0.55), 0 0 0 1px rgba(27, 29, 43, 0.08);
+    overflow: hidden;
+  }
+  .chrome { display: flex; gap: 7px; padding: 2px 4px 12px; }
+  .chrome i { width: 11px; height: 11px; border-radius: 50%; background: var(--t-border); }
+  .panes { display: grid; grid-template-columns: 22% 1fr 38%; gap: 8px; height: 420px; padding-top: 8px; }
+  .pane { border: 1px solid var(--t-border); border-radius: 8px; position: relative; transition: border-color .25s; }
+  .pbody { height: 100%; overflow: hidden; }
+  .pane.focus { border-color: var(--t-focus); }
+  .ptitle {
+    position: absolute; top: -1px; left: 12px; transform: translateY(-50%);
+    background: var(--t-bg); padding: 0 6px; font-size: 12px; white-space: nowrap;
+  }
+  .tab { padding: 0 6px; color: var(--t-dim); }
+  .tab.on { background: var(--t-focus); color: #11111B; font-weight: 600; }
+  .pbody { padding: 14px 12px 10px; }
+  .row { white-space: pre; overflow: hidden; text-overflow: clip; }
+  .dim { color: var(--t-dim); }
+  .yel { color: var(--t-yellow); }
+  .blu { color: var(--t-blue); }
+  .grn { color: var(--t-green); }
+  .mau { color: var(--t-focus); }
+  .red { color: var(--t-red); }
+  .sel { background: #45475A; }
+  .open { color: var(--t-yellow); font-weight: 600; }
+
+  .tree .kids { display: none; }
+  .tree .kids.shown { display: block; }
+  .ed-code .row { padding-left: 0; }
+  .ln { display: inline-block; width: 3ch; text-align: right; color: var(--t-dim); margin-right: 1.4ch; }
+  .ed-code .row.flash { background: var(--t-flash); transition: background 1.2s; }
+  .ed-code .row.chosen { background: #3A3350; }
+  .ed-empty { color: var(--t-dim); padding: 40px 10px; line-height: 2; }
+  .ed-code { display: none; }
+  .show-code .ed-empty { display: none; }
+  .show-code .ed-code { display: block; }
+
+  .agent .out .row { white-space: pre-wrap; }
+  .ref { color: var(--t-teal); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; border-radius: 2px; }
+  .ref.hover { background: rgba(148, 226, 213, 0.18); font-weight: 600; }
+  .ref.press { background: rgba(148, 226, 213, 0.38); }
+  .prompt { position: absolute; left: 12px; right: 12px; bottom: 34px; border-top: 1px solid var(--t-border); border-bottom: 1px solid var(--t-border); padding: 4px 0; white-space: pre-wrap; }
+  .caret { display: inline-block; width: 0.6em; background: var(--t-fg); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .agent-foot { position: absolute; left: 12px; bottom: 10px; font-size: 11.5px; color: var(--t-dim); }
+
+  .status {
+    display: flex; justify-content: space-between; gap: 12px;
+    background: var(--t-panel); margin: 8px -12px 0; padding: 4px 12px; font-size: 12px; color: var(--t-dim);
+  }
+  .status b { background: var(--t-focus); color: #11111B; padding: 0 6px; margin-right: 10px; }
+  .status .msg { color: var(--t-yellow); }
+
+  .pointer {
+    position: absolute; width: 18px; height: 18px; pointer-events: none; z-index: 3;
+    transition: left .7s cubic-bezier(.6,.05,.3,1), top .7s cubic-bezier(.6,.05,.3,1), transform .12s;
+    left: 70%; top: 105%; opacity: 0;
+    filter: drop-shadow(0 2px 3px rgba(0,0,0,.5));
+  }
+  .pointer.down { transform: scale(0.82); }
+  .replay {
+    position: absolute; right: 0; bottom: -44px;
+    font: 500 15px var(--sans); color: var(--slate); background: none; border: 0; cursor: pointer; padding: 6px 2px;
+  }
+  .replay:hover { color: var(--ink); }
+  .replay[hidden] { display: none; }
+
+  /* ---------- sections ---------- */
+  section { padding: 96px 0 0; }
+  h2 {
+    font-size: clamp(32px, 4.2vw, 52px);
+    line-height: 1.02;
+    letter-spacing: -0.028em;
+    font-weight: 800;
+    margin: 0 0 18px;
+    max-width: 18ch;
+  }
+  h3 { font-size: 21px; line-height: 1.25; letter-spacing: -0.01em; margin: 0 0 6px; font-weight: 700; }
+  p { margin: 0 0 14px; }
+  .muted { color: var(--slate); }
+  code, kbd {
+    font: 500 0.82em var(--mono);
+    background: var(--paper-deep); border: 1px solid var(--rule); border-radius: 5px; padding: 1px 6px;
+    white-space: nowrap;
+  }
+
+  .install { display: grid; grid-template-columns: 1.1fr 1fr; gap: 56px; align-items: start; }
+  .cmd {
+    background: var(--t-bg); color: var(--t-fg); border-radius: 12px; padding: 22px 22px 20px;
+    font: 400 14.5px/1.9 var(--mono); position: relative; overflow-x: auto; white-space: pre;
+  }
+  .cmd .c { color: var(--t-dim); }
+  .cmd .p { color: var(--t-focus); user-select: none; }
+  .copy {
+    position: absolute; top: 12px; right: 12px; font: 500 13px var(--sans);
+    background: #313244; color: var(--t-fg); border: 0; border-radius: 6px; padding: 5px 10px; cursor: pointer;
+  }
+  .copy:hover { background: #45475A; }
+
+  .loop { list-style: none; margin: 40px 0 0; padding: 0; display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border-top: 2px solid var(--ink); }
+  .loop li { padding: 22px 24px 0 0; }
+  .loop li + li { padding-left: 24px; border-left: 1px solid var(--rule); }
+  .loop .n { font: 800 15px var(--sans); color: var(--mauve); display: block; margin-bottom: 10px; }
+  .loop p { color: var(--slate); font-size: 16.5px; }
+
+  .versus { display: grid; grid-template-columns: 1fr 1fr; gap: 0; margin-top: 44px; background: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 0 0 1px var(--rule); }
+  .versus > div { padding: 34px 36px 22px; }
+  .versus > div + div { background: var(--t-bg); color: var(--t-fg); }
+  .versus > div + div .muted { color: #A6ADC8; }
+  .versus > div + div code { background: #313244; border-color: #45475A; color: var(--t-fg); }
+  .versus ul { list-style: none; padding: 0; margin: 18px 0 0; }
+  .versus li { padding: 12px 0; border-top: 1px solid var(--rule); font-size: 16.5px; line-height: 1.5; }
+  .versus > div + div li { border-color: #313244; }
+  .versus li strong { font-weight: 700; }
+
+  .shot { margin: 40px 0 0; }
+  .shot img { width: 100%; height: auto; display: block; border-radius: 12px; box-shadow: 0 30px 60px -30px rgba(27,29,43,.5), 0 0 0 1px rgba(27,29,43,.1); }
+  .shot figcaption { color: var(--slate); font-size: 15px; margin-top: 12px; }
+
+  .road { list-style: none; padding: 0; margin: 40px 0 0; position: relative; }
+  .road::before { content: ""; position: absolute; left: 7px; top: 8px; bottom: 8px; width: 2px; background: var(--rule); }
+  .road > li { position: relative; padding: 0 0 36px 44px; }
+  .road > li::before {
+    content: ""; position: absolute; left: 0; top: 7px; width: 16px; height: 16px; border-radius: 50%;
+    background: var(--paper); border: 2px solid var(--slate);
+  }
+  .road > li.done::before { background: var(--mauve); border-color: var(--mauve); }
+  .road > li.next::before { border-color: var(--mauve); box-shadow: 0 0 0 5px var(--mauve-soft); }
+  .road h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; }
+  .road .when { font: 500 14px var(--sans); color: var(--slate); }
+  .road ul { margin: 8px 0 0; padding-left: 18px; color: var(--slate); font-size: 16.5px; columns: 2; column-gap: 40px; }
+  .road ul li { break-inside: avoid; margin-bottom: 4px; }
+
+  .status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; margin-top: 36px; }
+  .status-grid h3 { font-size: 18px; }
+  .status-grid p { color: var(--slate); font-size: 16px; }
+
+  .cta { margin: 120px 0 0; padding: 64px 0 72px; border-top: 2px solid var(--ink); display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: end; }
+  .cta h2 { margin: 0; }
+  .button {
+    display: inline-block; background: var(--ink); color: var(--paper); text-decoration: none;
+    font-weight: 700; font-size: 18px; padding: 16px 26px; border-radius: 10px;
+  }
+  .button:hover { background: var(--mauve); }
+  footer { color: var(--slate); font-size: 15px; padding: 0 0 48px; display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+
+  @media (max-width: 900px) {
+    body { font-size: 17px; }
+    nav ul li:not(:last-child) { display: none; }
+    .hero-row, .install, .versus, .cta { grid-template-columns: 1fr; }
+    .fact { text-align: left; }
+    .panes { grid-template-columns: 1fr; height: auto; row-gap: 14px; }
+    .status > span:last-child { display: none; }
+    .pane.tree { display: none; }
+    .pane.editor { height: 230px; }
+    .pane.agent { height: 330px; }
+    .loop { grid-template-columns: 1fr 1fr; row-gap: 28px; }
+    .loop li:nth-child(3) { padding-left: 0; border-left: 0; }
+    .road ul { columns: 1; }
+    .status-grid { grid-template-columns: 1fr; gap: 12px; }
+    .versus > div { padding: 28px 24px 16px; }
+  }
+  @media (max-width: 520px) {
+    .loop { grid-template-columns: 1fr; }
+    .loop li + li { padding-left: 0; border-left: 0; }
+    .term { font-size: 11.5px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .pointer { display: none; }
+    .caret { animation: none; }
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <nav aria-label="Main">
+    <a class="mark" href="#top">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#1E1E2E"/><path d="M8 23V9l16 14V9" stroke="#CBA6F7" stroke-width="3.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      NOIDA
+    </a>
+    <ul>
+      <li><a href="#loop">How it works</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="#roadmap">Roadmap</a></li>
+      <li><a class="gh" href="https://github.com/its-banana-coder/noida">GitHub</a></li>
+    </ul>
+  </nav>
+
+  <header class="hero" id="top">
+    <div class="hero-row">
+      <div>
+        <h1>The IDE for code your agent writes.</h1>
+        <p class="lede">NOIDA puts a file tree, a real editor, LSP and git review next to your actual Claude Code or Codex session, in your terminal. Every <code>file:line</code> the agent prints opens with one click.</p>
+      </div>
+      <p class="fact"><strong>~20 MB</strong>of memory, one native binary.<br>No Electron.</p>
+    </div>
+
+    <div class="stage" aria-label="Animated demo of NOIDA">
+      <div class="term" id="demo">
+        <div class="chrome" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="panes">
+          <div class="pane tree" id="p-tree">
+            <div class="ptitle"><span class="tab on">FILES</span> <span class="tab">OUTLINE</span></div>
+            <div class="pbody">
+              <div class="row"><span class="mau">▾</span> src</div>
+              <div class="row">  <span class="mau" id="auth-arrow">▸</span> auth</div>
+              <div class="kids" id="auth-kids">
+                <div class="row">      <span id="f-session">session.ts</span>  <span class="yel">M</span></div>
+                <div class="row">      token.ts</div>
+              </div>
+              <div class="row">  <span class="mau">▸</span> api</div>
+              <div class="row">  <span class="mau">▸</span> ui</div>
+              <div class="row">    app.ts</div>
+              <div class="row">  package.json</div>
+              <div class="row">  README.md</div>
+            </div>
+          </div>
+
+          <div class="pane editor" id="p-editor">
+            <div class="ptitle"><span class="tab on" id="ed-tab">EDITOR</span></div>
+            <div class="pbody">
+              <div class="ed-empty">Alt+o  open a file<br>click a path in the agent pane<br>Alt+s  send selection to the agent</div>
+              <div class="ed-code" aria-hidden="true">
+                <div class="row dim">src › auth › session.ts › ƒ refreshSession</div>
+                <div class="row"><span class="ln">83</span><span class="dim">}</span></div>
+                <div class="row"><span class="ln">84</span></div>
+                <div class="row"><span class="ln">85</span><span class="dim">// Renew before the token expires.</span></div>
+                <div class="row"><span class="ln">86</span><span class="mau">export</span> <span class="mau">async</span> <span class="mau">function</span> <span class="blu">refreshSession</span>() {</div>
+                <div class="row" id="l87"><span class="ln">87</span>  <span class="mau">while</span> (<span class="yel">!</span>token.<span class="blu">valid</span>()) {</div>
+                <div class="row" id="l88"><span class="ln">88</span>    token <span class="yel">=</span> <span class="mau">await</span> <span class="blu">fetchToken</span>();</div>
+                <div class="row" id="l89"><span class="ln">89</span>  }</div>
+                <div class="row" id="l90"><span class="ln">90</span>  <span class="mau">return</span> token;</div>
+                <div class="row"><span class="ln">91</span>}</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pane agent focus" id="p-agent">
+            <div class="ptitle"><span class="tab on">● claude ✕</span> <span class="tab">○ codex ✕</span></div>
+            <div class="pbody out" id="agent-out"></div>
+            <div class="prompt" id="agent-prompt"><span class="dim">❯</span> <span id="prompt-text"></span><span class="caret" aria-hidden="true">&nbsp;</span></div>
+            <div class="agent-foot">›› auto mode on</div>
+          </div>
+        </div>
+        <div class="status"><span><b>NOIDA</b><span class="msg" id="status-msg">Alt+j jump to ref · Alt+g sessions · Alt+r review</span></span><span>⎇ main ±2</span></div>
+      </div>
+      <svg class="pointer" id="pointer" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 2l15 11-7 1 4 8-3 1-4-8-5 5z" fill="#fff" stroke="#1B1D2B" stroke-width="1.5" stroke-linejoin="round"/></svg>
+      <button class="replay" id="replay" hidden>Replay the demo</button>
+    </div>
+  </header>
+
+  <section id="loop" aria-labelledby="loop-h">
+    <h2 id="loop-h">The loop you run fifty times a day, in seconds.</h2>
+    <p class="prose muted">Your agent writes and explains. You read, check and steer. NOIDA removes the alt-tabbing between the two.</p>
+    <ol class="loop">
+      <li><span class="n">1</span><h3>Ask</h3><p>Your real <code>claude</code> or <code>codex</code> runs in a pane, with your login, MCP servers and slash commands.</p></li>
+      <li><span class="n">2</span><h3>Click</h3><p>Paths, <code>#L10-20</code> ranges and symbol names in the answer are links. <kbd>Alt+j</kbd> labels them for the keyboard.</p></li>
+      <li><span class="n">3</span><h3>Read</h3><p>The tree expands, the editor jumps to the line, and definitions and references are one key away.</p></li>
+      <li><span class="n">4</span><h3>Send back</h3><p>Select lines and press <kbd>Alt+s</kbd>. <code>@file#L87-90</code> lands in the agent's prompt.</p></li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="vs-h">
+    <h2 id="vs-h">Leave the heavy IDE closed.</h2>
+    <p class="prose muted">If your day is mostly "agent writes, you review", this covers what you were opening VS Code for, plus the parts it was never built to do.</p>
+    <div class="versus">
+      <div>
+        <h3>The editor features you'd miss</h3>
+        <ul>
+          <li><strong>Language servers:</strong> go to definition, references, rename across files, hover, quick fixes, format</li>
+          <li><strong>Multi-cursor</strong> with <kbd>Ctrl+D</kbd>, column selection, regex find and replace</li>
+          <li><strong>Workspace search and replace</strong> with a preview of every change</li>
+          <li>Tree-sitter outline, breadcrumbs, sticky scroll, folding, Markdown preview</li>
+          <li>File tree operations, fuzzy open, command palette, tabs, git gutter</li>
+        </ul>
+      </div>
+      <div>
+        <h3>What an IDE doesn't do</h3>
+        <ul>
+          <li><strong>Review every hunk</strong> the agent changed, then accept it into git or reject it from disk</li>
+          <li><strong>Know what the agent is doing:</strong> working, finished or waiting for permission, with a timeline of reads, edits and commands</li>
+          <li><strong>Share what you're looking at:</strong> the agent is told your open file and selection when you prompt</li>
+          <li><strong>Run agents side by side,</strong> resume old conversations, or isolate one in its own git worktree</li>
+          <li class="muted">No extensions and no debugger, on purpose. The terminal still does the rest.</li>
+        </ul>
+      </div>
+    </div>
+    <figure class="shot">
+      <img src="screenshot.png" alt="NOIDA with the file tree, a Rust file open in the editor, and Claude Code running in the right pane" loading="lazy" width="1885" height="960">
+      <figcaption>An actual session: NOIDA's own source in the editor, Claude Code on the right.</figcaption>
+    </figure>
+  </section>
+
+  <section id="install" aria-labelledby="install-h">
+    <div class="install">
+      <div>
+        <h2 id="install-h">Install in one command.</h2>
+        <p class="muted">You need Rust 1.88 or newer. NOIDA adds a tab for each agent CLI it finds on your <code>PATH</code>.</p>
+        <p class="muted">On a Mac, set your terminal's Option key to act as Alt, or press <kbd>Ctrl+]</kbd> before any shortcut. The <a href="https://github.com/its-banana-coder/noida#-macos-option-as-alt">README has the setting for each terminal</a>.</p>
+      </div>
+      <div class="cmd" id="cmd">
+<button class="copy" id="copy" type="button">Copy</button><span class="c"># install</span>
+<span class="p">$ </span>cargo install --git https://github.com/its-banana-coder/noida
+
+<span class="c"># open a project</span>
+<span class="p">$ </span>noida ~/code/my-app</div>
+    </div>
+  </section>
+
+  <section id="roadmap" aria-labelledby="road-h">
+    <h2 id="road-h">Where it's heading.</h2>
+    <p class="prose muted">NOIDA is an early preview. It runs daily on Linux and WSL2; macOS is untested so far. Here's what's done and what comes next.</p>
+    <ol class="road">
+      <li class="done">
+        <h3>Foundation <span class="when">v0.1, shipped</span></h3>
+        <ul>
+          <li>Agent tabs, split panes, sessions and resume</li>
+          <li>Clickable file and symbol references</li>
+          <li>Hook-based status, activity and handoff</li>
+          <li>Hunk-by-hunk review, worktree agents</li>
+          <li>LSP and tree-sitter code intelligence</li>
+          <li>Multi-cursor editor, search, Markdown preview</li>
+        </ul>
+      </li>
+      <li class="next">
+        <h3>Hardening <span class="when">next</span></h3>
+        <ul>
+          <li>CI on Linux and macOS</li>
+          <li>Prebuilt binaries for each release</li>
+          <li>Verified on Mac terminals</li>
+          <li>Editor context shared with agents</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Editor completeness</h3>
+        <ul>
+          <li>Split editor groups</li>
+          <li>Custom keybindings</li>
+          <li><kbd>Ctrl+Shift</kbd> shortcuts via the kitty keyboard protocol</li>
+          <li>Search and copy inside agent panes</li>
+          <li>Git log, file history, unstage</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Deeper agent workflows</h3>
+        <ul>
+          <li>Compare the same task across agents</li>
+          <li>Implement, review and fix handoffs</li>
+          <li>Per-agent changed files with review tracking</li>
+          <li>Remote projects over SSH</li>
+        </ul>
+      </li>
+    </ol>
+  </section>
+
+  <section aria-labelledby="status-h">
+    <h2 id="status-h">Before you try it.</h2>
+    <div class="status-grid">
+      <div><h3>It's alpha</h3><p>Tested live on Linux and WSL2 with Claude Code, Codex and rust-analyzer. Expect rough edges elsewhere.</p></div>
+      <div><h3>Your agent stays yours</h3><p>NOIDA runs the real CLI and adds its hooks per session. Your Claude and Codex config files are never modified.</p></div>
+      <div><h3>Commit before rejecting</h3><p>Rejecting a hunk reverts it on disk. Destructive actions ask twice, but git is your undo.</p></div>
+    </div>
+  </section>
+
+  <div class="cta">
+    <h2>Tell us what breaks.</h2>
+    <a class="button" href="https://github.com/its-banana-coder/noida">Get NOIDA on GitHub</a>
+  </div>
+
+  <footer>
+    <span>NOIDA is MIT licensed.</span>
+    <span><a href="https://github.com/its-banana-coder/noida/issues">Report an issue</a></span>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const demo = $("demo"), out = $("agent-out"), promptText = $("prompt-text"), pointer = $("pointer");
+  const stage = demo.parentElement;
+  let timers = [];
+  const wait = (ms) => new Promise((r) => timers.push(setTimeout(r, reduce ? 0 : ms)));
+
+  const lines = [
+    ['<span class="dim">❯</span> where does the session refresh happen?', "row"],
+    ["", "row"],
+    ['<span class="grn">●</span> Read(<span class="ref">src/auth/session.ts</span>)', "row"],
+    ["", "row"],
+    ['<span class="grn">●</span> Token refresh lives in', "row"],
+    ['  <span class="ref" id="the-ref">src/auth/session.ts:87</span>. The loop', "row"],
+    ["  retries with no backoff when the token", "row"],
+    ["  server is down.", "row"],
+  ];
+
+  async function type(el, text, speed = 28) {
+    el.textContent = "";
+    for (const ch of text) {
+      el.textContent += ch;
+      await wait(speed);
+    }
+  }
+
+  function movePointerTo(el) {
+    const s = stage.getBoundingClientRect(), r = el.getBoundingClientRect();
+    pointer.style.opacity = "1";
+    pointer.style.left = (r.left - s.left + r.width * 0.6) + "px";
+    pointer.style.top = (r.top - s.top + r.height * 0.55) + "px";
+  }
+
+  function reset() {
+    timers.forEach(clearTimeout);
+    timers = [];
+    out.innerHTML = "";
+    promptText.textContent = "";
+    demo.classList.remove("show-code");
+    $("ed-tab").textContent = "EDITOR";
+    $("auth-kids").classList.remove("shown");
+    $("auth-arrow").textContent = "▸";
+    $("f-session").classList.remove("open", "sel");
+    ["l87", "l88", "l89", "l90"].forEach((id) => $(id).classList.remove("flash", "chosen"));
+    $("p-agent").classList.add("focus");
+    $("p-editor").classList.remove("focus");
+    $("status-msg").textContent = "Alt+j jump to ref · Alt+g sessions · Alt+r review";
+    pointer.style.opacity = "0";
+    $("replay").hidden = true;
+  }
+
+  async function run() {
+    reset();
+    await wait(600);
+    await type(promptText, "where does the session refresh happen?", 34);
+    await wait(450);
+    promptText.textContent = "";
+    for (const [html, cls] of lines) {
+      const d = document.createElement("div");
+      d.className = cls;
+      d.innerHTML = html || "&nbsp;";
+      out.appendChild(d);
+      await wait(230);
+    }
+    await wait(500);
+    const ref = $("the-ref");
+    if (!reduce) {
+      movePointerTo(ref);
+      await wait(800);
+      ref.classList.add("hover");
+      await wait(450);
+      pointer.classList.add("down");
+      ref.classList.add("press");
+      await wait(160);
+      pointer.classList.remove("down");
+    }
+    ref.classList.remove("press");
+    // The jump: tree reveals, editor opens at the line.
+    $("auth-arrow").textContent = "▾";
+    $("auth-kids").classList.add("shown");
+    $("f-session").classList.add("open", "sel");
+    demo.classList.add("show-code");
+    $("ed-tab").textContent = "session.ts";
+    $("l87").classList.add("flash");
+    $("status-msg").textContent = "src/auth/session.ts:87";
+    await wait(1400);
+    $("l87").classList.remove("flash");
+    // Select the loop and send it back.
+    $("p-agent").classList.remove("focus");
+    $("p-editor").classList.add("focus");
+    if (!reduce) {
+      movePointerTo($("l87"));
+      await wait(700);
+    }
+    for (const id of ["l87", "l88", "l89", "l90"]) {
+      $(id).classList.add("chosen");
+      await wait(140);
+    }
+    await wait(500);
+    $("status-msg").textContent = "Alt+s  sent selection to claude";
+    pointer.style.opacity = "0";
+    $("p-editor").classList.remove("focus");
+    $("p-agent").classList.add("focus");
+    await type(promptText, "@src/auth/session.ts#L87-90 add exponential backoff", 22);
+    $("replay").hidden = false;
+  }
+
+  $("replay").addEventListener("click", run);
+
+  // Start when the demo scrolls into view.
+  const io = new IntersectionObserver((entries) => {
+    if (entries.some((e) => e.isIntersecting)) {
+      io.disconnect();
+      run();
+    }
+  }, { threshold: 0.35 });
+  io.observe(demo);
+
+  $("copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText("cargo install --git https://github.com/its-banana-coder/noida");
+      $("copy").textContent = "Copied";
+    } catch {
+      $("copy").textContent = "Select and copy";
+    }
+    setTimeout(() => ($("copy").textContent = "Copy"), 1800);
+  });
+})();
+</script>
+</body>
+</html>
