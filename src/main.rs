@@ -6,6 +6,7 @@ mod editor;
 mod events;
 mod git;
 mod hooks;
+mod keys;
 mod lsp;
 mod markdown;
 mod picker;
@@ -23,19 +24,20 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
+use ratatui::crossterm::event::{self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
 use ratatui::crossterm::execute;
 
 const HELP: &str = "\
 NOIDA — Navigation-Oriented IDE for Developer Agents
 
 USAGE:
-    noida [PATH[:LINE]] [--agent NAME=COMMAND]... [--fresh]
+    noida [PATH[:LINE]] [--agent NAME=COMMAND]... [--fresh] [--no-kitty-keys]
 
     PATH      project directory (default: current dir), or a file to open
     --agent   agent tab to run, e.g. --agent claude=claude --agent aider=\"aider --no-git\"
               (default: restore last session's tabs, else claude + codex + shell)
     --fresh   don't restore open files, layout and agent sessions
+    --no-kitty-keys  don't enable the kitty keyboard protocol (Ctrl+Shift shortcuts)
 
 KEYS (Alt+x opens the command palette with everything):
     Alt+1/2/3   focus files / editor / agent     Alt+0   toggle file tree
@@ -75,6 +77,7 @@ fn main() -> Result<()> {
     let mut target: Option<String> = None;
     let mut agents: Vec<(String, String)> = Vec::new();
     let mut restore = true;
+    let mut kitty = true;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-h" | "--help" => {
@@ -86,6 +89,7 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             "--fresh" => restore = false,
+            "--no-kitty-keys" => kitty = false,
             "--agent" => {
                 let spec = args.next().context("--agent needs NAME=COMMAND")?;
                 let (name, cmd) = spec.split_once('=').unwrap_or((&spec, &spec));
@@ -120,7 +124,24 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture, EnableBracketedPaste)?;
+    // Kitty keyboard protocol: makes Ctrl+Shift+letter distinguishable. Alternate
+    // keys make Alt+Shift+, arrive as Alt+< like in legacy terminals.
+    if kitty && ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false) {
+        let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS;
+        if execute!(std::io::stdout(), PushKeyboardEnhancementFlags(flags)).is_ok() {
+            keys::set_enhanced(true);
+            // Runs before ratatui's hook leaves the alternate screen, whose flag stack we pushed to.
+            let hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+                hook(info);
+            }));
+        }
+    }
     let result = run(&mut terminal, opts, open, line);
+    if keys::enhanced() {
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    }
     let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();
     result
