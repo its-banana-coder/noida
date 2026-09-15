@@ -142,6 +142,8 @@ impl App {
                 View::Review(v) => format!(" ± {} ", v.title()),
                 View::Activity(v) => format!(" ⏱ {} ", v.title),
                 View::Search(_) => " ⌕ Search ".to_string(),
+                View::AgentChanges(_) => " ✓ Agent Changes ".to_string(),
+                View::Compare(v) => format!(" ⇄ {} ", v.title),
             };
             x += title.chars().count() as u16 + 1;
             spans.push(Span::styled(title, active_style));
@@ -199,6 +201,14 @@ impl App {
                 return None;
             }
             Some(View::Activity(v)) => {
+                v.render(area, buf);
+                return None;
+            }
+            Some(View::AgentChanges(v)) => {
+                v.render(area, buf);
+                return None;
+            }
+            Some(View::Compare(v)) => {
                 v.render(area, buf);
                 return None;
             }
@@ -296,7 +306,10 @@ impl App {
             let mut spans = vec![Span::raw(" ")];
             let mut x = block.x + 2;
             for (i, a) in self.agents.iter().enumerate() {
-                let label = format!(" {} {} ", a.status_glyph(), a.name);
+                let label = match self.unreviewed.get(&a.name) {
+                    Some(&n) if n > 0 => format!(" {} {} ○{n} ", a.status_glyph(), a.name),
+                    _ => format!(" {} {} ", a.status_glyph(), a.name),
+                };
                 let w = label.chars().count() as u16;
                 self.rects.agent_tabs[slot].push((x, x + w, i));
                 let style = if i == self.slots[slot] {
@@ -364,6 +377,7 @@ impl App {
                     PromptKind::NewBranch => "new branch name",
                     PromptKind::Commit => "commit message",
                     PromptKind::WorktreeName(_) => "worktree task name",
+                    PromptKind::SendToPair(..) => "prompt for both agents",
                 };
                 (format!("{label}: {input}▏"), theme::ACCENT(), false)
             }
@@ -380,6 +394,8 @@ impl App {
                         (Focus::Editor, Some(View::Review(v))) => v.status(),
                         (Focus::Editor, Some(View::Activity(v))) => v.status().into(),
                         (Focus::Editor, Some(View::Search(v))) => v.status(),
+                        (Focus::Editor, Some(View::AgentChanges(v))) => v.status().into(),
+                        (Focus::Editor, Some(View::Compare(v))) => v.status().into(),
                         (Focus::Tree, _) => "↑↓ move  ⏎ open  ← collapse  R refresh  │  Alt+x commands  Alt+o files  Alt+g sessions  Alt+q quit".into(),
                         (Focus::Editor, None) => "^S save  ^F find  F12 definition  Alt+l symbols  │  Alt+s send  Alt+e ask  Alt+r review  Alt+x commands".into(),
                         (Focus::Agent, _) => "Alt+j jump to ref  Alt+? find  drag to copy  Alt+g sessions  Alt+n next  Alt+v split  │  Alt+r review  Alt+x commands".into(),

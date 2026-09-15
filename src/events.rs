@@ -15,6 +15,8 @@ pub enum Bg {
     Hook(usize, AgentEvent),
     Index(FileIndex),
     Git(Option<git::Status>),
+    /// Status of each worktree agent's checkout, keyed by worktree path.
+    WorktreeGit(Vec<(std::path::PathBuf, git::Status)>),
     Sessions(Vec<PastSession>),
     Symbols(ProjectSymbols),
     Lsp(LspEvent),

@@ -102,7 +102,9 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 - **Exact status via hooks**: `⠙` working · `✓` finished · `!` needs permission
 - **Permission alerts** say what the agent wants to run
 - **Activity timeline** (`Alt+a`) of reads, edits and commands, plus a persistent history
-- **Handoff**: ask Codex to review Claude's changes, or the reverse
+- **Handoff**: ask Codex to review Claude's changes, or ask one agent to fix the other's review findings
+- **Changed files per agent** (`Alt+C`) with reviewed tracking; tabs show `○N` unreviewed files
+- **Compare two agents** side by side, or send the same prompt to both
 - **Worktree agents**: isolate an agent in its own git worktree, then apply its changes
 
 </td>
@@ -298,9 +300,9 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**, not 
 
 ### 🤝 v0.4 · Deeper agent integration
 - [x] **Share editor context**: agents automatically know which file, line and selection you're looking at when you prompt
-- [ ] Compare the same task across agents or worktrees, side by side
-- [ ] Richer handoff flows (implement → review → fix)
-- [ ] Changed-files panel per agent, with `✓ reviewed` tracking
+- [x] Compare the same task across agents or worktrees, side by side
+- [x] Richer handoff flows (implement → review → fix)
+- [x] Changed-files panel per agent, with `✓ reviewed` tracking
 
 ### 🔭 Later
 - [ ] Remote development over SSH

@@ -2,6 +2,7 @@ mod actions;
 mod activity;
 mod agent;
 mod app;
+mod changes;
 mod editor;
 mod events;
 mod git;

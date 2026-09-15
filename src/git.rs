@@ -352,6 +352,42 @@ impl Repo {
         Ok(CommitShow { meta, files: parse_diff(diff) })
     }
 
+    pub fn head(&self) -> Result<String> {
+        Ok(self.git(&["rev-parse", "HEAD"])?.trim().to_string())
+    }
+
+    pub fn merge_base(&self, a: &str, b: &str) -> Result<String> {
+        Ok(self.git(&["merge-base", a, b])?.trim().to_string())
+    }
+
+    /// Lines added/deleted per file between `base` and the working tree
+    /// (commits, staged and unstaged work), plus untracked files as all-added.
+    /// `only` restricts to those repo-relative paths. `None` counts mean binary.
+    pub fn numstat(&self, base: &str, only: Option<&[String]>) -> Result<Vec<(String, Option<(usize, usize)>)>> {
+        if only.is_some_and(|o| o.is_empty()) {
+            return Ok(Vec::new());
+        }
+        let paths: Vec<&str> = only.unwrap_or_default().iter().map(String::as_str).collect();
+        let mut args = vec!["diff", "--numstat", "--no-renames", base, "--"];
+        args.extend(&paths);
+        let mut out = Vec::new();
+        for line in self.git(&args)?.lines() {
+            let mut parts = line.splitn(3, '\t');
+            let (Some(add), Some(del), Some(path)) = (parts.next(), parts.next(), parts.next()) else { continue };
+            out.push((path.to_string(), add.parse().ok().zip(del.parse().ok())));
+        }
+        let mut args = vec!["ls-files", "--others", "--exclude-standard", "-z", "--"];
+        args.extend(&paths);
+        for path in self.git(&args)?.split('\0').filter(|p| !p.is_empty()) {
+            let bytes = std::fs::read(self.root.join(path)).unwrap_or_default();
+            let binary = bytes[..bytes.len().min(8000)].contains(&0);
+            let lines = String::from_utf8_lossy(&bytes).lines().count();
+            out.push((path.to_string(), (!binary).then_some((lines, 0))));
+        }
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(out)
+    }
+
     pub fn commit(&self, message: &str) -> Result<String> {
         let out = self.git(&["commit", "-m", message])?;
         Ok(out.lines().next().unwrap_or("").to_string())
@@ -642,6 +678,11 @@ mod tests {
         std::fs::write(path.join("a.txt"), "changed\n").unwrap();
         std::fs::write(path.join("b.txt"), "new\n").unwrap();
         let wt = Repo::discover(&path).unwrap();
+        let base = wt.merge_base("HEAD", &repo.head().unwrap()).unwrap();
+        let stats = wt.numstat(&base, None).unwrap();
+        assert_eq!(stats, vec![("a.txt".to_string(), Some((1, 10))), ("b.txt".to_string(), Some((1, 0)))]);
+        assert_eq!(wt.numstat(&base, Some(&["b.txt".to_string()])).unwrap().len(), 1);
+        assert!(wt.numstat(&base, Some(&[])).unwrap().is_empty());
         assert_eq!(repo.apply_worktree(&wt).unwrap(), 2);
         assert_eq!(std::fs::read_to_string(dir.0.join("b.txt")).unwrap(), "new\n");
         repo.remove_worktree(&path, &branch).unwrap();

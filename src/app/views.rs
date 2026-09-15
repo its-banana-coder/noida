@@ -23,6 +23,9 @@ pub enum ViewResult {
     /// Files on disk changed (reload docs, refresh git).
     Changed(String),
     ReviewTurn(usize),
+    /// Review the unstaged diff of `files` (repo-relative) in the repo at `root`.
+    Review { root: PathBuf, title: String, files: Vec<String> },
+    ToggleReviewed { agent: String, path: String, version: crate::changes::Version, reviewed: bool },
 }
 
 // ---------------------------------------------------------------- review --
