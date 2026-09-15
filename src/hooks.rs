@@ -38,7 +38,11 @@ pub struct Server {
 
 impl Server {
     pub fn start(tx: Sender<Bg>) -> std::io::Result<Server> {
-        let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+        // Unix socket paths are limited to ~104 bytes; macOS's $TMPDIR is long, so prefer /tmp there.
+        let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| {
+            let tmp = std::env::temp_dir();
+            if tmp.as_os_str().len() > 40 && Path::new("/tmp").is_dir() { PathBuf::from("/tmp") } else { tmp }
+        });
         let path = dir.join(format!("noida-{}.sock", std::process::id()));
         let context = dir.join(format!("noida-{}.ctx", std::process::id()));
         let _ = std::fs::write(&context, "");
@@ -68,8 +72,16 @@ impl Drop for Server {
 
 fn read_message(mut stream: UnixStream) -> Option<(usize, Vec<AgentEvent>)> {
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw).ok()?;
+    // Read until EOF; keep what arrived even if the read times out.
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+        }
+    }
+    let raw = String::from_utf8_lossy(&bytes).into_owned();
     let mut parts = raw.splitn(3, '\n');
     let agent: usize = parts.next()?.trim().parse().ok()?;
     let source = parts.next()?.trim().to_string();
@@ -88,6 +100,7 @@ pub fn forward(source: &str, payload: &str) {
     let Ok(mut stream) = UnixStream::connect(sock) else { return };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
     let _ = stream.write_all(format!("{agent}\n{source}\n{payload}").as_bytes());
+    let _ = stream.shutdown(std::net::Shutdown::Write);
 }
 
 /// For UserPromptSubmit, text printed to stdout is added to Claude's context.
@@ -208,8 +221,9 @@ mod tests {
         let server = Server::start(tx).unwrap();
         let mut s = UnixStream::connect(&server.path).unwrap();
         s.write_all(b"7\nclaude\n{\"hook_event_name\":\"Stop\"}").unwrap();
+        s.shutdown(std::net::Shutdown::Write).unwrap();
         drop(s);
-        match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
+        match rx.recv_timeout(Duration::from_secs(10)).expect("hook event") {
             Bg::Hook(7, AgentEvent::Stop) => {}
             _ => panic!("unexpected event"),
         }
