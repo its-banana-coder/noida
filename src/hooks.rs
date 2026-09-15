@@ -17,6 +17,7 @@ use crate::events::Bg;
 
 pub const ENV_SOCKET: &str = "NOIDA_SOCKET";
 pub const ENV_AGENT: &str = "NOIDA_AGENT_ID";
+pub const ENV_CONTEXT: &str = "NOIDA_CONTEXT";
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentEvent {
@@ -31,12 +32,16 @@ pub enum AgentEvent {
 
 pub struct Server {
     pub path: PathBuf,
+    /// File holding the user's current editor context, read by `noida hook`.
+    pub context: PathBuf,
 }
 
 impl Server {
     pub fn start(tx: Sender<Bg>) -> std::io::Result<Server> {
         let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
         let path = dir.join(format!("noida-{}.sock", std::process::id()));
+        let context = dir.join(format!("noida-{}.ctx", std::process::id()));
+        let _ = std::fs::write(&context, "");
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
         std::thread::spawn(move || {
@@ -50,13 +55,14 @@ impl Server {
                 }
             }
         });
-        Ok(Server { path })
+        Ok(Server { path, context })
     }
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(&self.context);
     }
 }
 
@@ -82,6 +88,18 @@ pub fn forward(source: &str, payload: &str) {
     let Ok(mut stream) = UnixStream::connect(sock) else { return };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
     let _ = stream.write_all(format!("{agent}\n{source}\n{payload}").as_bytes());
+}
+
+/// For UserPromptSubmit, text printed to stdout is added to Claude's context.
+/// Returns the editor context to print, if sharing is on and a file is open.
+pub fn prompt_context(payload: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(payload).ok()?;
+    if v["hook_event_name"] != "UserPromptSubmit" {
+        return None;
+    }
+    let text = std::fs::read_to_string(std::env::var_os(ENV_CONTEXT)?).ok()?;
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 pub fn parse_claude(v: &Value) -> Option<AgentEvent> {
@@ -169,6 +187,19 @@ mod tests {
         assert!(matches!(parse_claude(&note), Some(AgentEvent::Notification { permission: true, .. })));
         let codex = json!({"type": "agent-turn-complete", "input-messages": ["fix it"], "last-assistant-message": "done"});
         assert_eq!(parse_codex(&codex), vec![AgentEvent::Prompt { text: "fix it".into() }, AgentEvent::Stop]);
+    }
+
+    #[test]
+    fn prompt_context_only_for_prompts() {
+        let file = std::env::temp_dir().join(format!("noida-ctx-test-{}", std::process::id()));
+        std::fs::write(&file, "looking at src/a.rs\n").unwrap();
+        // SAFETY: tests in this module don't read this variable concurrently.
+        unsafe { std::env::set_var(ENV_CONTEXT, &file) };
+        assert_eq!(prompt_context(r#"{"hook_event_name":"UserPromptSubmit","prompt":"hi"}"#).as_deref(), Some("looking at src/a.rs"));
+        assert_eq!(prompt_context(r#"{"hook_event_name":"Stop"}"#), None);
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(prompt_context(r#"{"hook_event_name":"UserPromptSubmit"}"#), None);
+        std::fs::remove_file(&file).ok();
     }
 
     #[test]

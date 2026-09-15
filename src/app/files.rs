@@ -301,6 +301,40 @@ impl App {
 
     // ---- agent helpers ----
 
+    /// Keep the context file that `noida hook` hands to Claude on each prompt current.
+    pub(super) fn write_shared_context(&mut self) {
+        let Some(server) = &self.hook_server else { return };
+        let text = match self.docs.get(self.active_doc).filter(|_| self.settings.share_editor_context) {
+            Some(doc) => {
+                let rel = refs::relative(&self.root, &doc.path).into_owned();
+                let (s, e) = doc.selected_lines();
+                let sel = if doc.has_selection() {
+                    if s == e { format!(", with line {s} selected") } else { format!(", with lines {s}-{e} selected") }
+                } else {
+                    String::new()
+                };
+                let others: Vec<String> = self
+                    .docs
+                    .iter()
+                    .filter(|d| d.path != doc.path)
+                    .take(5)
+                    .map(|d| refs::relative(&self.root, &d.path).into_owned())
+                    .collect();
+                let tabs = if others.is_empty() { String::new() } else { format!(" Other open files: {}.", others.join(", ")) };
+                format!(
+                    "[NOIDA editor context] The user is looking at {rel} around line {}{sel} in their editor.{tabs} Use this only if it is relevant to their request.",
+                    doc.cursor_line()
+                )
+            }
+            None => String::new(),
+        };
+        if text != self.shared_context {
+            if std::fs::write(&server.context, &text).is_ok() {
+                self.shared_context = text;
+            }
+        }
+    }
+
     pub(super) fn send_symbol(&mut self) {
         let Some(doc) = self.docs.get_mut(self.active_doc) else { return self.info("open a file first") };
         let line = doc.cursor_line0();

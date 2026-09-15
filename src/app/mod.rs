@@ -158,6 +158,7 @@ pub struct App {
     pending_format: Option<PathBuf>,
     last_cursor: Option<(u16, u16)>,
     leader: bool,
+    shared_context: String,
     tx: Sender<Bg>,
     file_index: Arc<FileIndex>,
     index_built: Option<Instant>,
@@ -238,6 +239,7 @@ impl App {
             pending_format: None,
             last_cursor: None,
             leader: false,
+            shared_context: String::new(),
             file_index: Arc::default(),
             index_built: None,
             index_building: false,
@@ -413,6 +415,7 @@ impl App {
         let mut env = vec![(hooks::ENV_AGENT.to_string(), a.id.to_string())];
         if let Some(server) = &self.hook_server {
             env.push((hooks::ENV_SOCKET.to_string(), server.path.to_string_lossy().into_owned()));
+            env.push((hooks::ENV_CONTEXT.to_string(), server.context.to_string_lossy().into_owned()));
         }
         let hooked = self.hook_server.is_some();
         let mut resume = false;
@@ -738,6 +741,7 @@ impl App {
         }
         self.auto_save();
         self.touch_mru();
+        self.write_shared_context();
         let touched_recent = self.activity.touched.values().any(|(_, t)| t.elapsed() < Duration::from_secs(9));
         changed || touched_recent || self.doc().is_some_and(Doc::flash_active)
     }
@@ -1554,6 +1558,14 @@ impl App {
                 self.set_focus(Focus::Tree);
             }
             Action::SendSymbol => self.send_symbol(),
+            Action::ToggleShareContext => {
+                self.settings.share_editor_context = !self.settings.share_editor_context;
+                self.info(if self.settings.share_editor_context {
+                    "agents now see which file and lines you're looking at when you prompt"
+                } else {
+                    "stopped sharing editor context with agents"
+                });
+            }
             Action::ToggleMarkdownPreview => {
                 if let Some(doc) = self.docs.get_mut(self.active_doc) {
                     if crate::markdown::is_markdown(&doc.path) {

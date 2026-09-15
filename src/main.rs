@@ -59,6 +59,9 @@ fn main() -> Result<()> {
             let mut payload = String::new();
             let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload);
             hooks::forward("claude", &payload);
+            if let Some(ctx) = hooks::prompt_context(&payload) {
+                println!("{ctx}");
+            }
             return Ok(());
         }
         Some("hook-codex") => {

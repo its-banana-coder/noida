@@ -133,6 +133,7 @@ pub enum Action {
     RevealInOs,
     ToggleOutline,
     SendSymbol,
+    ToggleShareContext,
     ToggleMarkdownPreview,
     AskMenu,
     Hover,
@@ -228,6 +229,7 @@ impl Action {
             Action::ToggleOutline => s("View: Toggle Outline", "tree: Tab"),
             Action::SendSymbol => s("Agent: Send Current Symbol", ""),
             Action::AskMenu => s("Ask Agent…", "Alt+e"),
+            Action::ToggleShareContext => s("Agent: Toggle Sharing Editor Context", ""),
             Action::ToggleMarkdownPreview => s("Markdown: Toggle Preview", "Alt+m"),
             Action::Hover => s("Show Hover Information", "Alt+h"),
             Action::RenameSymbol => s("Rename Symbol…", "F2"),
@@ -245,7 +247,7 @@ impl Action {
         let mut v = vec![
             QuickOpen, SearchWorkspace, ReplaceWorkspace, GoToSymbol, Hover, RenameSymbol, CodeActions, FormatDocument, FormatSelection, OrganizeImports, GoToProjectSymbol, GoToDefinition, FindReferences, Problems, FixProblem,
             ReviewChanges, AcceptAllChanges, SwitchBranch, NewBranch, Commit,
-            Sessions, AgentActivity, AgentHistory, AskMenu, SendSelection, SendFile, SendSymbol,
+            Sessions, AgentActivity, AgentHistory, ToggleShareContext, AskMenu, SendSelection, SendFile, SendSymbol,
         ];
         v.extend(self::Ask::ALL.map(Action::Ask));
         v.extend([
