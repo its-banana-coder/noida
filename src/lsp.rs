@@ -42,6 +42,8 @@ pub enum Request {
     CodeAction,
     Formatting,
     ExecuteCommand,
+    /// Pull diagnostics (`textDocument/diagnostic`), used by servers that don't push them.
+    Diagnostic,
 }
 
 /// Edits per file: ((line, utf16), (line, utf16), new text).
@@ -126,6 +128,26 @@ fn server_for(lang: Lang) -> Option<(&'static str, &'static [&'static str])> {
     candidates.iter().copied().find(|(bin, _)| on_path(bin))
 }
 
+/// TypeScript 7 (the native compiler) ships its own language server as
+/// `tsc --lsp --stdio`; typescript-language-server can't drive it. Prefer a
+/// project-local compiler, then the one on PATH.
+fn native_typescript(root: &Path) -> Option<String> {
+    let local = root.join("node_modules/.bin/tsc");
+    let candidates = [local.to_string_lossy().into_owned(), "tsc".to_string()];
+    candidates.into_iter().find(|tsc| {
+        (tsc == "tsc" && on_path("tsc") || Path::new(tsc).is_file())
+            && Command::new(tsc)
+                .arg("--version")
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .and_then(|v| v.split_whitespace().nth(1)?.split('.').next()?.parse::<u32>().ok())
+                .is_some_and(|major| major >= 7)
+    })
+}
+
 fn on_path(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(program).is_file()))
 }
@@ -182,6 +204,11 @@ struct Server {
     /// Opened documents and their version.
     open: HashMap<PathBuf, i32>,
     queued: Vec<Value>,
+    /// Server offers pull diagnostics.
+    pull: bool,
+    /// Server has pushed diagnostics, so pulling isn't needed.
+    pushes: bool,
+    pull_paths: HashMap<u64, PathBuf>,
 }
 
 impl Server {
@@ -199,6 +226,39 @@ impl Server {
             self.queued.push(msg);
         }
     }
+}
+
+impl Server {
+    fn pull_diagnostics(&mut self, path: &Path) {
+        if !self.ready || !self.pull || self.pushes {
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        self.pending.insert(id, Request::Diagnostic);
+        self.pull_paths.insert(id, path.to_path_buf());
+        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": "textDocument/diagnostic", "params": {"textDocument": {"uri": uri(path)}}}));
+    }
+}
+
+fn parse_diagnostics(items: &Value) -> Vec<Diagnostic> {
+    items
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|d| Diagnostic {
+                    line: d["range"]["start"]["line"].as_u64().unwrap_or(0) as usize,
+                    col: d["range"]["start"]["character"].as_u64().unwrap_or(0) as usize,
+                    end_line: d["range"]["end"]["line"].as_u64().unwrap_or(0) as usize,
+                    end_col: d["range"]["end"]["character"].as_u64().unwrap_or(0) as usize,
+                    raw: d.clone(),
+                    severity: d["severity"].as_u64().unwrap_or(1) as u8,
+                    message: d["message"].as_str().unwrap_or("").lines().next().unwrap_or("").to_string(),
+                    source: d["source"].as_str().unwrap_or("").to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl Drop for Server {
@@ -242,8 +302,15 @@ impl Lsp {
     }
 
     fn spawn(&mut self, lang: Lang) -> Option<usize> {
-        let (bin, args) = server_for(lang)?;
-        let mut child = Command::new(bin)
+        let (bin, args): (String, Vec<&str>) = match native_typescript(&self.root).filter(|_| matches!(lang, Lang::TypeScript | Lang::Tsx | Lang::JavaScript)) {
+            Some(tsc) => (tsc, vec!["--lsp", "--stdio"]),
+            None => {
+                let (bin, args) = server_for(lang)?;
+                (bin.to_string(), args.to_vec())
+            }
+        };
+        let name = Path::new(&bin).file_name().map_or(bin.clone(), |n| n.to_string_lossy().into_owned());
+        let mut child = Command::new(&bin)
             .args(args)
             .current_dir(&self.root)
             .stdin(Stdio::piped())
@@ -289,7 +356,7 @@ impl Lsp {
             }
         });
         let mut server = Server {
-            name: bin.to_string(),
+            name: if name == "tsc" { "tsc --lsp (TypeScript 7)".into() } else { name },
             stdin,
             child,
             ready: false,
@@ -297,6 +364,9 @@ impl Lsp {
             pending: HashMap::new(),
             open: HashMap::new(),
             queued: Vec::new(),
+            pull: false,
+            pushes: false,
+            pull_paths: HashMap::new(),
         };
         let root_uri = uri(&self.root);
         server.send(&json!({
@@ -311,6 +381,7 @@ impl Lsp {
                         "publishDiagnostics": {"relatedInformation": false},
                         "definition": {"linkSupport": true},
                         "references": {},
+                        "diagnostic": {"dynamicRegistration": false},
                         "hover": {"contentFormat": ["markdown", "plaintext"]},
                         "signatureHelp": {"signatureInformation": {"parameterInformation": {"labelOffsetSupport": true}, "activeParameterSupport": true}},
                         "rename": {"prepareSupport": false},
@@ -339,6 +410,7 @@ impl Lsp {
         }
         s.open.insert(path.to_path_buf(), 1);
         s.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri(path), "languageId": language_id(lang), "version": 1, "text": text}}));
+        s.pull_diagnostics(path);
     }
 
     pub fn did_change(&mut self, path: &Path, text: &str) {
@@ -348,6 +420,7 @@ impl Lsp {
         *version += 1;
         let v = *version;
         s.notify("textDocument/didChange", json!({"textDocument": {"uri": uri(path), "version": v}, "contentChanges": [{"text": text}]}));
+        s.pull_diagnostics(path);
     }
 
     pub fn did_save(&mut self, path: &Path) {
@@ -398,6 +471,7 @@ impl Lsp {
                 if params.get("range").is_some() { "textDocument/rangeFormatting" } else { "textDocument/formatting" }
             }
             Request::ExecuteCommand => "workspace/executeCommand",
+            Request::Diagnostic => "textDocument/diagnostic",
         };
         if kind != Request::ExecuteCommand {
             params["textDocument"] = json!({"uri": uri(path)});
@@ -440,27 +514,17 @@ impl Lsp {
 
         if msg["method"] == "textDocument/publishDiagnostics" {
             let Some(path) = msg["params"]["uri"].as_str().and_then(path_from_uri) else { return Response::None };
-            let diags: Vec<Diagnostic> = msg["params"]["diagnostics"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .map(|d| Diagnostic {
-                            line: d["range"]["start"]["line"].as_u64().unwrap_or(0) as usize,
-                            col: d["range"]["start"]["character"].as_u64().unwrap_or(0) as usize,
-                            end_line: d["range"]["end"]["line"].as_u64().unwrap_or(0) as usize,
-                            end_col: d["range"]["end"]["character"].as_u64().unwrap_or(0) as usize,
-                            raw: d.clone(),
-                            severity: d["severity"].as_u64().unwrap_or(1) as u8,
-                            message: d["message"].as_str().unwrap_or("").lines().next().unwrap_or("").to_string(),
-                            source: d["source"].as_str().unwrap_or("").to_string(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let diags = parse_diagnostics(&msg["params"]["diagnostics"]);
+            // Some pull-based servers still send empty pushes; only real ones count.
+            if !diags.is_empty() {
+                s.pushes = true;
+            } else if s.pull && !s.pushes {
+                return Response::None;
+            }
             if diags.is_empty() {
                 self.diagnostics.remove(&path);
             } else {
-                self.diagnostics.insert(path.clone(), diags.clone());
+                self.diagnostics.insert(path, diags);
             }
             return Response::Diagnostics;
         }
@@ -468,13 +532,34 @@ impl Lsp {
         let Some(id) = msg["id"].as_u64() else { return Response::None };
         if id == 0 {
             s.ready = true;
+            s.pull = msg["result"]["capabilities"]["diagnosticProvider"].is_object();
             s.send(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}));
             for m in std::mem::take(&mut s.queued) {
                 s.send(&m);
             }
+            let open: Vec<PathBuf> = s.open.keys().cloned().collect();
+            for p in open {
+                s.pull_diagnostics(&p);
+            }
             return Response::Ready(s.name.clone());
         }
         let Some(kind) = s.pending.remove(&id) else { return Response::None };
+        if kind == Request::Diagnostic {
+            let Some(path) = s.pull_paths.remove(&id) else { return Response::None };
+            if msg.get("error").is_some() || s.pushes {
+                return Response::None;
+            }
+            // "unchanged" reports keep the previous diagnostics.
+            if msg["result"]["kind"] == "full" {
+                let diags = parse_diagnostics(&msg["result"]["items"]);
+                if diags.is_empty() {
+                    self.diagnostics.remove(&path);
+                } else {
+                    self.diagnostics.insert(path, diags);
+                }
+            }
+            return Response::Diagnostics;
+        }
         if let Some(err) = msg.get("error") {
             let text = err["message"].as_str().unwrap_or("request failed").lines().next().unwrap_or("").to_string();
             return Response::Error(format!("{}: {text}", s.name));
@@ -501,7 +586,7 @@ impl Lsp {
             // Formatting edits apply to the requesting document (empty path).
             Request::Formatting => return Response::Edit(vec![(PathBuf::new(), parse_text_edits(result))]),
             Request::CodeAction => return Response::CodeActions(result.as_array().cloned().unwrap_or_default()),
-            Request::ExecuteCommand => return Response::None,
+            Request::ExecuteCommand | Request::Diagnostic => return Response::None,
             Request::Definition | Request::References => {}
         }
         let items: Vec<&Value> = match result {
@@ -564,3 +649,68 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod probe {
+    use super::*;
+
+    /// `LSP_PROBE=<root>:<rel file>:<line>:<utf16 col> cargo test lsp_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn lsp_probe() {
+        let spec = std::env::var("LSP_PROBE").unwrap();
+        let mut it = spec.split(':');
+        let root = PathBuf::from(it.next().unwrap());
+        let file = root.join(it.next().unwrap());
+        let line: usize = it.next().unwrap().parse().unwrap();
+        let col: usize = it.next().unwrap().parse().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut lsp = Lsp::new(root, tx);
+        lsp.did_open(&file, &std::fs::read_to_string(&file).unwrap());
+        let start = std::time::Instant::now();
+        let mut stage = 0;
+        let pos = json!({"line": line, "character": col});
+        while start.elapsed() < std::time::Duration::from_secs(100) && stage < 6 {
+            let ev = match rx.recv_timeout(std::time::Duration::from_secs(3)) {
+                Ok(Bg::Lsp(ev)) => Some(ev),
+                _ => None,
+            };
+            if let Some(LspEvent::Message(_, m)) = &ev {
+                if m.get("method").is_none() && m["result"].get("items").is_some() {
+                    println!("RAWDIAG {}", m.to_string().chars().take(400).collect::<String>());
+                }
+                if let Some(method) = m["method"].as_str() {
+                    if method.starts_with("window/") || method == "$/typescriptVersion" {
+                        println!("NOTE {method} {}", m["params"].to_string().chars().take(700).collect::<String>());
+                    }
+                }
+            }
+            let resp = ev.map(|e| lsp.handle(e));
+            match resp {
+                Some(Response::Ready(n)) => println!("READY {n}"),
+                Some(Response::Diagnostics) => println!("DIAG {:?}", lsp.diagnostics.get(&file).map(|d| d.iter().map(|x| (x.line, x.message.clone())).collect::<Vec<_>>())),
+                Some(Response::Hover(h)) => println!("HOVER {}", h.lines().take(3).collect::<Vec<_>>().join(" | ")),
+                Some(Response::Locations(k, l)) => println!("LOC {k:?} {l:?}"),
+                Some(Response::Edit(e)) => println!("EDIT {:?}", e.iter().map(|(p, x)| (p.display().to_string(), x.len())).collect::<Vec<_>>()),
+                Some(Response::CodeActions(a)) => println!("ACTIONS {:?}", a.iter().map(|x| x["title"].as_str().unwrap_or("?").to_string()).collect::<Vec<_>>()),
+                Some(Response::Error(e)) => println!("ERROR {e}"),
+                _ => {}
+            }
+            if start.elapsed() > std::time::Duration::from_secs(12 + stage * 4) {
+                let sent = match stage {
+                    0 => lsp.request_with(Request::Hover, &file, json!({"position": pos})),
+                    1 => lsp.request(Request::Definition, &file, line, col),
+                    2 => lsp.request(Request::References, &file, line, col),
+                    3 => lsp.request_with(Request::Formatting, &file, json!({"options": {"tabSize": 4, "insertSpaces": true}})),
+                    4 => {
+                        let diags: Vec<Value> = lsp.diagnostics.get(&file).map(|d| d.iter().map(|x| x.raw.clone()).collect()).unwrap_or_default();
+                        lsp.request_with(Request::CodeAction, &file, json!({"range": {"start": pos, "end": pos}, "context": {"diagnostics": diags}}))
+                    }
+                    _ => lsp.request_with(Request::Rename, &file, json!({"position": pos, "newName": "sumValues"})),
+                };
+                println!("SENT stage {stage}: {sent}");
+                stage += 1;
+            }
+        }
+    }
+}

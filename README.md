@@ -139,7 +139,7 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 
 ### 🧠 Code intelligence
 - **Tree-sitter** outline, project symbols and structural selection for Rust, TS/TSX, JS, Python, Go and Java
-- **LSP**: diagnostics, hover, signature help, definition, references, **rename across files**, code actions, format, organize imports
+- **LSP** (rust-analyzer, TypeScript 7's built-in server or typescript-language-server, Pyright/pylsp, gopls): diagnostics, hover, signature help, definition, references, **rename across files**, code actions, format, organize imports
 - No language server? Definitions come from the tree-sitter index and references from project search.
 
 </td>
@@ -299,6 +299,7 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**: a li
 - [ ] Remote development over SSH
 - [ ] Project map and dependency view for monorepos
 - [ ] Parallel task board across agents
+- [ ] Plugin ecosystem for commands, agents, language support, themes and workflow integrations ([roadmap](docs/plugin-ecosystem-roadmap.md))
 - [ ] Optional small local model for cheap context work (summarising files, finding relevant code) to cut agent token use
 
 ### 🚫 Non-goals
@@ -310,10 +311,10 @@ Extension marketplace · built-in AI chat or model · accounts and cloud sync ·
 
 | | |
 |---|---|
-| ✅ **Tested live** (Linux/WSL2, tmux and Windows Terminal, Claude Code 2.1, Codex CLI, rust-analyzer) | Reference clicking and jumps · agent tabs, split, hook status, activity, sessions/resume, new-session button, rename, history browser, workspace restore · hunk review, staged view, log and file history · worktree agents · definition/references/problems/hover/rename · editing, multi-cursor, find widget, split editor, Markdown preview · find and copy in agent panes · custom keybindings · changed files per agent |
+| ✅ **Tested live** (Linux/WSL2, tmux and Windows Terminal, Claude Code 2.1, Codex CLI, rust-analyzer) | Reference clicking and jumps · agent tabs, split, hook status, activity, sessions/resume, new-session button, rename, history browser, workspace restore · hunk review, staged view, log and file history · worktree agents · LSP with rust-analyzer, TypeScript 7 and Pyright (diagnostics, hover, definition, references, format, code actions) · editing, multi-cursor, find widget, split editor, Markdown preview · find and copy in agent panes · custom keybindings · changed files per agent |
 | 🍎 **macOS** | Builds and all tests pass in CI on every commit; little hands-on use yet |
 | 🧪 **Unit-tested, little hands-on use** | `Ctrl+Shift` shortcuts (kitty protocol) · compare agents, send prompt to two agents, fix-findings handoff · editor context sharing · workspace search/replace · tab and file tree actions · folding, wrap, sticky scroll · code actions, formatting · light theme |
-| ❔ **Not tested yet** | Native Windows (not supported) · very large repos · language servers other than rust-analyzer |
+| ❔ **Not tested yet** | Native Windows (not supported) · very large repos · gopls and pylsp |
 
 **Good to know**
 - 💥 Agents run inside NOIDA, so a crash stops them too. Your terminal is restored, and conversations can be resumed via **Sessions** (`Alt+g`).
