@@ -112,6 +112,7 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 - **Clickable references**: `app.rs:42`, `#L10-20`, `(lines 10-20)`, `around line 120`, `Read(src/app.rs)`, `a/src/app.rs`
 - **Short paths** like `index.ts:146` are matched against your project, with a picker if several files match
 - **Clickable symbols**: `resolveAnimatedLayout` in agent output jumps to its definition
+- **Find and copy in agent output**: `Alt+?` searches the scrollback too; drag with the mouse to copy
 - **Keyboard jumps**: `Alt+j` labels every reference on screen
 - **Send context**: `Alt+s` selection · `Alt+S` file · `Alt+e` explain / refactor / find bugs / write tests / fix problem
 
@@ -203,6 +204,7 @@ Also on a Mac:
 | `Alt+l` / `Alt+k` | Symbols in file / project | `Alt+i` | Problems |
 | `Alt+E` / `Alt+T` | Recent files / reopen closed | `Alt+-` | Go back |
 | `Alt+z` / `Alt+<` / `Alt+>` | Zoom / resize agent pane | `Alt+q` | Quit |
+| `Alt+?` (agent pane) | Find in agent output | drag (agent pane) | Select and copy output |
 
 <details>
 <summary><b>Editor keys</b></summary>
@@ -238,7 +240,7 @@ Also on a Mac:
 
 **Review changes**: `↑/↓` hunks · `Tab` next file · `a` accept hunk · `x` reject hunk · `A`/`X` whole file · `Enter` open · `r` refresh · `Esc` close
 
-**Agent pane**: every key goes to the agent · mouse wheel scrolls back · click a highlighted path or symbol to open it · click `✕` on a tab (or middle-click it) to close it
+**Agent pane**: every key goes to the agent · mouse wheel scrolls back · `Alt+?` finds text in the output and scrollback (`Enter`/`↓` next, `↑` previous, `Esc` close; capitals make it case-sensitive) · drag to select and copy (unless the app uses the mouse itself) · **Agent: Copy Visible Output** in `Alt+x` copies the screen · click a highlighted path or symbol to open it · click `✕` on a tab (or middle-click it) to close it
 
 </details>
 
@@ -291,8 +293,8 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**, not 
 - [x] Split editor (two editor groups, `Ctrl+\`)
 - [x] Custom keybindings in `settings.json`
 - [x] Kitty keyboard protocol, which enables `Ctrl+Shift+P/F/O/H/K/T` in terminals that support it
-- [ ] Search and mouse copy inside agent/terminal panes
-- [ ] Git: staged view with unstage, commit log, file history
+- [x] Search and mouse copy inside agent/terminal panes
+- [x] Git: staged view with unstage, commit log, file history
 
 ### 🤝 v0.4 · Deeper agent integration
 - [x] **Share editor context**: agents automatically know which file, line and selection you're looking at when you prompt

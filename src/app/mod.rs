@@ -36,7 +36,7 @@ use crate::symbols::{self, ProjectSymbols};
 use crate::tree::{Activate, Tree};
 use crate::workspace::{self, AgentState, DocState, Workspace};
 
-use findbar::{FindBar, FindResult};
+use findbar::{AgentFindBar, FindBar, FindResult};
 use groups::Group;
 use files::TreeMode;
 use lsp_ui::{Popup, PopupKind};
@@ -56,6 +56,7 @@ enum Mode {
     Picker(Picker),
     Prompt { kind: PromptKind, input: String },
     Find(FindBar),
+    AgentFind(AgentFindBar),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -83,6 +84,18 @@ enum Drag {
     AgentDivider,
     TreeDivider,
     SplitDivider,
+    AgentSelect,
+}
+
+/// Left button pressed in an agent pane that doesn't use the mouse itself.
+#[derive(Clone, Copy)]
+struct AgentPress {
+    slot: usize,
+    row: u16,
+    col: u16,
+    /// (absolute line, col) where the selection starts.
+    anchor: (usize, u16),
+    moved: bool,
 }
 
 struct Banner {
@@ -145,6 +158,7 @@ pub struct App {
     refs: [Vec<FileRef>; 2],
     hover: Option<(usize, u16, u16)>,
     drag: Drag,
+    agent_press: Option<AgentPress>,
     message: Option<(String, Instant, bool)>,
     banner: Option<Banner>,
     back: Vec<Loc>,
@@ -229,6 +243,7 @@ impl App {
             refs: [Vec::new(), Vec::new()],
             hover: None,
             drag: Drag::None,
+            agent_press: None,
             message: None,
             banner: None,
             back: Vec::new(),
@@ -791,6 +806,12 @@ impl App {
 
     fn on_paste(&mut self, text: &str) {
         match &mut self.mode {
+            Mode::AgentFind(bar) => {
+                bar.paste(text);
+                if let Some(a) = self.agents.iter_mut().find(|a| a.id == bar.agent_id) {
+                    bar.update(a, None);
+                }
+            }
             Mode::Picker(p) => {
                 p.paste(text);
                 if p.kind == Kind::Files {
@@ -869,6 +890,7 @@ impl App {
             match key.code {
                 KeyCode::Char('<' | ',') => return self.agent_pct = (self.agent_pct + 5).min(85),
                 KeyCode::Char('>') => return self.agent_pct = self.agent_pct.saturating_sub(5).max(15),
+                KeyCode::Char('?') if self.focus == Focus::Agent => return self.run(Action::AgentFind),
                 _ => {}
             }
         }
@@ -1147,6 +1169,7 @@ impl App {
                 Outcome::None => self.mode = Mode::Picker(p),
             },
             Mode::Find(bar) => self.on_find_key(bar, key),
+            Mode::AgentFind(bar) => self.on_agent_find_key(bar, key),
             Mode::Prompt { kind, mut input } => match key.code {
                 KeyCode::Esc => {}
                 KeyCode::Enter => self.submit_prompt(kind, input),
@@ -1283,6 +1306,79 @@ impl App {
         self.mode = Mode::Find(bar);
     }
 
+    fn open_agent_find(&mut self) {
+        let idx = self.active_agent();
+        let Some(id) = self.agents.get(idx).filter(|a| a.started()).map(|a| a.id) else { return self.info("no agent output to search") };
+        if self.zoom && self.focus != Focus::Agent {
+            self.zoom = false;
+        }
+        self.set_focus(Focus::Agent);
+        self.mode = Mode::AgentFind(AgentFindBar::new(id));
+    }
+
+    fn on_agent_find_key(&mut self, mut bar: AgentFindBar, key: KeyEvent) {
+        let result = bar.handle_key(key);
+        let Some(agent) = self.agents.iter_mut().find(|a| a.id == bar.agent_id) else { return };
+        match result {
+            FindResult::Close => {
+                agent.find_match = None;
+                agent.parser.screen_mut().set_scrollback(0);
+                return;
+            }
+            FindResult::Changed => bar.update(agent, None),
+            FindResult::Next => bar.update(agent, Some(true)),
+            FindResult::Prev => bar.update(agent, Some(false)),
+            _ => {}
+        }
+        self.mode = Mode::AgentFind(bar);
+    }
+
+    /// Clicking ends an agent find but keeps the viewport, so the match can be selected.
+    fn end_agent_find(&mut self) {
+        if let Mode::AgentFind(bar) = &self.mode {
+            let id = bar.agent_id;
+            if let Some(a) = self.agents.iter_mut().find(|a| a.id == id) {
+                a.find_match = None;
+            }
+            self.mode = Mode::Normal;
+        }
+    }
+
+    fn drag_agent_selection(&mut self, x: u16, y: u16) {
+        let Some(press) = self.agent_press else { return };
+        let area = self.rects.agents[press.slot];
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let row = y.clamp(area.y, area.y + area.height - 1) - area.y;
+        let col = x.clamp(area.x, area.x + area.width - 1) - area.x;
+        if !press.moved && (row, col) == (press.row, press.col) {
+            return;
+        }
+        self.agent_press = Some(AgentPress { moved: true, ..press });
+        if let Some(a) = self.agents.get_mut(self.slots[press.slot]) {
+            let head = (a.line_at(row), col);
+            a.selection = Some((press.anchor, head));
+        }
+    }
+
+    fn finish_agent_selection(&mut self) {
+        let Some(press) = self.agent_press.take() else { return };
+        if !press.moved {
+            // A plain click on a highlighted reference still opens it.
+            if let Some(r) = self.refs[press.slot].iter().find(|r| r.contains(press.row, press.col)).cloned() {
+                self.open_ref(&r);
+            }
+            return;
+        }
+        let text = self.agents.get_mut(self.slots[press.slot]).and_then(Agent::selection_text).unwrap_or_default();
+        if text.is_empty() {
+            return;
+        }
+        self.copy_to_host(&text);
+        self.info(format!("copied {} characters", text.chars().count()));
+    }
+
     fn on_mouse(&mut self, m: MouseEvent) {
         let (x, y) = (m.column, m.row);
         if matches!(m.kind, MouseEventKind::Down(_)) {
@@ -1302,6 +1398,10 @@ impl App {
 
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                self.end_agent_find();
+                for a in &mut self.agents {
+                    a.selection = None;
+                }
                 if !matches!(self.mode, Mode::Normal | Mode::Find(_)) {
                     self.mode = Mode::Normal;
                 }
@@ -1393,7 +1493,18 @@ impl App {
                 } else if let Some(slot) = slot_at {
                     let (row, col) = (y - agent_areas[slot].y, x - agent_areas[slot].x);
                     self.active_slot = slot;
-                    if let Some(r) = self.refs[slot].iter().find(|r| r.contains(row, col)).cloned() {
+                    let hit = self.refs[slot].iter().find(|r| r.contains(row, col)).cloned();
+                    let idx = self.slots[slot];
+                    let select = self.agents.get(idx).is_some_and(|a| a.started() && !a.wants_mouse());
+                    if select {
+                        // Decide on release: a click opens a reference, a drag selects text.
+                        let anchor = (self.agents[idx].line_at(row), col);
+                        self.agent_press = Some(AgentPress { slot, row, col, anchor, moved: false });
+                        self.drag = Drag::AgentSelect;
+                        if hit.is_none() {
+                            self.set_focus(Focus::Agent);
+                        }
+                    } else if let Some(r) = hit {
                         self.open_ref(&r);
                     } else {
                         self.set_focus(Focus::Agent);
@@ -1430,6 +1541,7 @@ impl App {
                     self.agent_pct = ((right.saturating_sub(x)) as u32 * 100 / main.width as u32).clamp(15, 85) as u16;
                 }
                 Drag::TreeDivider => self.tree_width = (x.saturating_sub(main.x) + 1).clamp(12, 80),
+                Drag::AgentSelect => self.drag_agent_selection(x, y),
                 Drag::SplitDivider if agent_area.height > 0 => {
                     self.split_pct = ((y.saturating_sub(agent_area.y)) as u32 * 100 / agent_area.height as u32).clamp(15, 85) as u16;
                 }
@@ -1443,7 +1555,9 @@ impl App {
                 }
             },
             MouseEventKind::Up(_) => {
-                self.drag = Drag::None;
+                if std::mem::replace(&mut self.drag, Drag::None) == Drag::AgentSelect {
+                    return self.finish_agent_selection();
+                }
                 if let Some(slot) = slot_at {
                     let idx = self.slots[slot];
                     if let Some(a) = self.agents.get_mut(idx) {
@@ -1731,6 +1845,13 @@ impl App {
                     self.active_slot = 1 - self.active_slot;
                 }
                 self.set_focus(Focus::Agent);
+            }
+            Action::AgentFind => self.open_agent_find(),
+            Action::AgentCopyScreen => {
+                let idx = self.active_agent();
+                let Some(text) = self.agents.get(idx).filter(|a| a.started()).map(Agent::screen_text) else { return self.info("no agent output to copy") };
+                self.copy_to_host(&text);
+                self.info(format!("copied {} characters", text.chars().count()));
             }
             Action::ReviewChanges => {
                 let only = self.banner.as_ref().filter(|b| !b.changed.is_empty()).map(|b| b.changed.clone());
