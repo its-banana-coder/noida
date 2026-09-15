@@ -105,6 +105,12 @@ pub enum Action {
     AgentActivity,
     AgentHistory,
     Handoff { from: usize, to: usize },
+    FixFindings { reviewer: usize, fixer: usize },
+    AgentChanges,
+    CompareAgents,
+    ComparePair { a: usize, b: usize },
+    RunInBoth,
+    SendToPair { a: usize, b: usize },
     GoToSymbol,
     GoToProjectSymbol,
     GoToDefinition,
@@ -199,7 +205,10 @@ impl Action {
             Action::Commit => s("Git: Commit Staged…", ""),
             Action::AgentActivity => s("Agent: Activity & Timeline", "Alt+a"),
             Action::AgentHistory => s("Agent: History", ""),
-            Action::Handoff { .. } => None,
+            Action::Handoff { .. } | Action::FixFindings { .. } | Action::ComparePair { .. } | Action::SendToPair { .. } => None,
+            Action::AgentChanges => s("Agent: Changed Files…", "Alt+C"),
+            Action::CompareAgents => s("Agent: Compare Two Agents…", ""),
+            Action::RunInBoth => s("Agent: Send Same Prompt to Two Agents…", ""),
             Action::GoToSymbol => s("Go to Symbol in File…", "Alt+l"),
             Action::GoToProjectSymbol => s("Go to Symbol in Project…", "Alt+k"),
             Action::GoToDefinition => s("Go to Definition", "F12"),
@@ -247,7 +256,7 @@ impl Action {
         let mut v = vec![
             QuickOpen, SearchWorkspace, ReplaceWorkspace, GoToSymbol, Hover, RenameSymbol, CodeActions, FormatDocument, FormatSelection, OrganizeImports, GoToProjectSymbol, GoToDefinition, FindReferences, Problems, FixProblem,
             ReviewChanges, AcceptAllChanges, SwitchBranch, NewBranch, Commit,
-            Sessions, AgentActivity, AgentHistory, ToggleShareContext, AskMenu, SendSelection, SendFile, SendSymbol,
+            Sessions, AgentActivity, AgentHistory, AgentChanges, CompareAgents, RunInBoth, ToggleShareContext, AskMenu, SendSelection, SendFile, SendSymbol,
         ];
         v.extend(self::Ask::ALL.map(Action::Ask));
         v.extend([

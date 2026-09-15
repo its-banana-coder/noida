@@ -1,5 +1,6 @@
 //! Top-level application state, input routing and command dispatch.
 
+mod agent_views;
 mod draw;
 mod files;
 mod findbar;
@@ -21,6 +22,7 @@ use ratatui::layout::Rect;
 use crate::actions::{Action, AgentKind};
 use crate::activity::{Activity, Notice, Turn};
 use crate::agent::{Agent, HINT_KEYS, hint_label};
+use crate::changes::{self, Mark};
 use crate::editor::{Click, Doc, KeyResult, SearchOpts, Syntax};
 use crate::settings::{self, Settings};
 use crate::events::Bg;
@@ -38,6 +40,7 @@ use findbar::{FindBar, FindResult};
 use files::TreeMode;
 use lsp_ui::{Popup, PopupKind};
 use search::SearchView;
+use agent_views::{AgentChangesView, ChangeGroup, ChangedFile, CompareFile, CompareSide, CompareView};
 use views::{ActivityView, ReviewView, ViewResult};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -65,12 +68,15 @@ enum PromptKind {
     NewBranch,
     Commit,
     WorktreeName(AgentKind),
+    SendToPair(usize, usize),
 }
 
 enum View {
     Review(ReviewView),
     Activity(ActivityView),
     Search(SearchView),
+    AgentChanges(AgentChangesView),
+    Compare(CompareView),
 }
 
 #[derive(PartialEq)]
@@ -173,6 +179,14 @@ pub struct App {
     activity: Activity,
     last_tool: HashMap<usize, String>,
     history: Vec<Turn>,
+    /// Manual reviewed marks per (agent name, activity path).
+    reviewed: HashMap<(String, String), Mark>,
+    /// Git status of each worktree agent's checkout.
+    worktree_git: HashMap<PathBuf, git::Status>,
+    /// Unreviewed changed-file count per agent name, shown in agent tabs.
+    unreviewed: HashMap<String, usize>,
+    /// View to return to when a review opened from it closes.
+    return_view: Option<View>,
     lsp: Lsp,
     lsp_synced: HashMap<PathBuf, u64>,
     pending_definition: Option<String>,
@@ -253,6 +267,10 @@ impl App {
             activity: Activity::new(root.clone()),
             last_tool: HashMap::new(),
             history: Vec::new(),
+            reviewed: HashMap::new(),
+            worktree_git: HashMap::new(),
+            unreviewed: HashMap::new(),
+            return_view: None,
             lsp: Lsp::new(root.clone(), tx.clone()),
             lsp_synced: HashMap::new(),
             pending_definition: None,
@@ -521,8 +539,13 @@ impl App {
         self.git_building = true;
         self.last_git = Instant::now();
         let tx = self.tx.clone();
+        let worktrees: Vec<PathBuf> = self.agents.iter().filter_map(|a| a.worktree.as_ref().map(|w| w.0.clone())).collect();
         std::thread::spawn(move || {
             let _ = tx.send(Bg::Git(repo.status().ok()));
+            if !worktrees.is_empty() {
+                let statuses = worktrees.into_iter().filter_map(|p| Repo { root: p.clone() }.status().ok().map(|s| (p, s))).collect();
+                let _ = tx.send(Bg::WorktreeGit(statuses));
+            }
         });
     }
 
@@ -573,6 +596,11 @@ impl App {
                     self.git = st;
                 }
                 self.refresh_marks();
+                self.refresh_agent_views();
+            }
+            Bg::WorktreeGit(statuses) => {
+                self.worktree_git = statuses.into_iter().collect();
+                self.refresh_agent_views();
             }
             Bg::Sessions(list) => {
                 if let Mode::Picker(p) = &mut self.mode {
@@ -683,6 +711,7 @@ impl App {
                 v.set_turns(self.activity.turns.clone());
             }
         }
+        self.refresh_agent_views();
     }
 
     /// Periodic work. Returns true when a redraw is needed.
@@ -877,6 +906,8 @@ impl App {
             Some(View::Review(v)) => v.handle_key(key),
             Some(View::Activity(v)) => v.handle_key(key),
             Some(View::Search(v)) => v.handle_key(key),
+            Some(View::AgentChanges(v)) => v.handle_key(key),
+            Some(View::Compare(v)) => v.handle_key(key),
             None => return,
         };
         self.on_view_result(result);
@@ -885,8 +916,13 @@ impl App {
     fn on_view_result(&mut self, result: ViewResult) {
         match result {
             ViewResult::None => {}
-            ViewResult::Close => self.view = None,
+            ViewResult::Close => {
+                let back = self.return_view.take().filter(|_| matches!(self.view, Some(View::Review(_))));
+                self.view = back;
+                self.refresh_agent_views();
+            }
             ViewResult::Open(path, line) => {
+                self.return_view = None;
                 if !matches!(self.view, Some(View::Search(_))) {
                     self.view = None;
                 }
@@ -917,6 +953,28 @@ impl App {
                 if let Some(files) = changed {
                     self.open_review(Some(files));
                 }
+            }
+            ViewResult::Review { root, title, files } => {
+                let from = self.view.take();
+                match ReviewView::new(title, Repo { root }, Some(files)) {
+                    Ok(v) => {
+                        if v.is_empty() {
+                            self.info("nothing left to review in the diff (already accepted, rejected or committed)");
+                        }
+                        self.view = Some(View::Review(v));
+                        self.return_view = from;
+                        self.focus = Focus::Editor;
+                    }
+                    Err(e) => {
+                        self.view = from;
+                        self.error(e);
+                    }
+                }
+            }
+            ViewResult::ToggleReviewed { agent, path, version, reviewed } => {
+                self.info(format!("{path}: {}", if reviewed { "marked unreviewed" } else { "marked reviewed" }));
+                self.reviewed.insert((agent, path), changes::toggle(version, reviewed));
+                self.refresh_agent_views();
             }
         }
     }
@@ -1146,6 +1204,7 @@ impl App {
                 self.git_op(|r| r.commit(input.trim()));
             }
             PromptKind::WorktreeName(kind) => self.new_worktree_agent(kind, input.trim()),
+            PromptKind::SendToPair(a, b) => self.send_to_pair(a, b, &input),
         }
     }
 
@@ -1319,6 +1378,14 @@ impl App {
                             let r = v.click(y);
                             self.on_view_result(r);
                         }
+                        Some(View::AgentChanges(v)) => {
+                            let r = v.click(y);
+                            self.on_view_result(r);
+                        }
+                        Some(View::Compare(v)) => {
+                            let r = v.click(x, y);
+                            self.on_view_result(r);
+                        }
                         None => {
                             if let Some(doc) = self.docs.get_mut(self.active_doc) {
                                 let alt = m.modifiers.contains(KeyModifiers::ALT);
@@ -1401,6 +1468,8 @@ impl App {
                         Some(View::Review(v)) => v.scroll_by(delta),
                         Some(View::Activity(v)) => v.scroll_by(delta),
                         Some(View::Search(v)) => v.scroll_by(delta),
+                        Some(View::AgentChanges(v)) => v.scroll_by(delta),
+                        Some(View::Compare(v)) => v.scroll_by(delta),
                         None => {
                             if let Some(doc) = self.docs.get_mut(self.active_doc) {
                                 if doc.md_preview {
@@ -1705,6 +1774,25 @@ impl App {
                 self.mode = Mode::Picker(Picker::new("Agent History", Kind::Static, items).ordered());
             }
             Action::Handoff { from, to } => self.handoff(from, to),
+            Action::FixFindings { reviewer, fixer } => self.fix_findings(reviewer, fixer),
+            Action::AgentChanges => {
+                self.return_view = None;
+                self.view = Some(View::AgentChanges(AgentChangesView::new(self.change_groups())));
+                self.focus = Focus::Editor;
+            }
+            Action::CompareAgents => self.pick_pair("Compare Two Agents", |a, b| Action::ComparePair { a, b }),
+            Action::ComparePair { a, b } => {
+                if a >= self.agents.len() || b >= self.agents.len() {
+                    return;
+                }
+                let mut sides = [self.compare_side(a), self.compare_side(b)];
+                agent_views::mark_shared(&mut sides);
+                self.return_view = None;
+                self.view = Some(View::Compare(CompareView::new(sides)));
+                self.focus = Focus::Editor;
+            }
+            Action::RunInBoth => self.pick_pair("Send Same Prompt to Two Agents", |a, b| Action::SendToPair { a, b }),
+            Action::SendToPair { a, b } => self.mode = Mode::Prompt { kind: PromptKind::SendToPair(a, b), input: String::new() },
             Action::Sessions => {
                 self.mode = Mode::Picker(Picker::new("Sessions", Kind::Static, session_tab_items(&self.agents)).ordered());
                 let tx = self.tx.clone();
@@ -1832,6 +1920,7 @@ impl App {
             for (ti, to) in self.agents.iter().enumerate() {
                 if ti != fi && to.kind.is_some() {
                     items.push(Item::new(format!("Handoff: Ask {} to Review {}'s Changes", to.name, from.name), turn.summary(), Target::Action(Action::Handoff { from: fi, to: ti })));
+                    items.push(Item::new(format!("Handoff: Ask {} to Fix {}'s Review Findings", to.name, from.name), turn.summary(), Target::Action(Action::FixFindings { reviewer: fi, fixer: ti })));
                 }
             }
         }
@@ -1922,6 +2011,7 @@ impl App {
     }
 
     fn open_review(&mut self, only: Option<Vec<String>>) {
+        self.return_view = None;
         let idx = self.active_agent();
         let (repo, title) = match self.agents.get(idx).and_then(|a| a.worktree.clone()) {
             Some((path, branch)) => (Some(Repo { root: path }), format!("Changes · {branch}")),
@@ -1961,6 +2051,152 @@ impl App {
         if let Some(a) = self.agent() {
             a.paste(&prompt);
         }
+    }
+
+    fn fix_findings(&mut self, reviewer: usize, fixer: usize) {
+        let (Some(r), Some(_)) = (self.agents.get(reviewer), self.agents.get(fixer)) else { return };
+        let name = r.name.clone();
+        let prompt = changes::fix_findings_prompt(&name, self.activity.last_turn(&name));
+        self.show_agent(fixer);
+        self.set_focus(Focus::Agent);
+        if let Some(a) = self.agent() {
+            a.paste(&prompt);
+        }
+        self.info(format!("paste {name}'s findings at the end of the prompt, then press Enter"));
+    }
+
+    /// Picker over every pair of agent tabs (not shells).
+    fn pick_pair(&mut self, title: &str, action: fn(usize, usize) -> Action) {
+        let ids: Vec<usize> = (0..self.agents.len()).filter(|&i| matches!(self.agents[i].kind, Some(k) if k != AgentKind::Shell)).collect();
+        if ids.len() < 2 {
+            return self.info("open at least two Claude/Codex tabs first");
+        }
+        let where_ = |i: usize| self.agents[i].worktree.as_ref().map_or("main checkout".to_string(), |w| w.1.clone());
+        let mut items = Vec::new();
+        for (n, &a) in ids.iter().enumerate() {
+            for &b in &ids[n + 1..] {
+                let detail = format!("{} · {}", where_(a), where_(b));
+                items.push(Item::new(format!("{} ⇄ {}", self.agents[a].name, self.agents[b].name), detail, Target::Action(action(a, b))));
+            }
+        }
+        self.mode = Mode::Picker(Picker::new(title, Kind::Static, items).ordered());
+    }
+
+    fn send_to_pair(&mut self, a: usize, b: usize, input: &str) {
+        let text = input.trim();
+        if text.is_empty() || a >= self.agents.len() || b >= self.agents.len() {
+            return;
+        }
+        let idle: Vec<String> = [a, b].iter().filter(|&&i| !self.agents[i].started() || self.agents[i].exited).map(|&i| self.agents[i].name.clone()).collect();
+        if !idle.is_empty() {
+            return self.error(format!("{} not running; open the tab first", idle.join(" and ")));
+        }
+        for i in [a, b] {
+            self.agents[i].paste(text);
+            self.agents[i].write(b"\r");
+        }
+        self.split = true;
+        self.assign_slot(0, a);
+        self.assign_slot(1, b);
+        self.info(format!("sent to {} and {}; compare their work with Agent: Compare Two Agents", self.agents[a].name, self.agents[b].name));
+    }
+
+    fn abs_path(&self, p: &str) -> PathBuf {
+        let path = Path::new(p);
+        if path.is_absolute() { path.to_path_buf() } else { self.root.join(path) }
+    }
+
+    /// Files each agent changed, with git state and reviewed flags.
+    fn change_groups(&self) -> Vec<ChangeGroup> {
+        let mut groups = Vec::new();
+        for a in self.agents.iter().filter(|a| matches!(a.kind, Some(k) if k != AgentKind::Shell)) {
+            let (repo_root, status) = match &a.worktree {
+                Some((path, _)) => (Some(path.clone()), self.worktree_git.get(path)),
+                None => (self.repo.as_ref().map(|r| r.root.clone()), self.repo.as_ref().map(|_| &self.git)),
+            };
+            let in_repo = status.is_some();
+            let mut files: Vec<ChangedFile> = Vec::new();
+            let mut add = |key: String, abs: PathBuf, created: bool, version: changes::Version| {
+                let repo_rel = repo_root.as_ref().and_then(|r| abs.strip_prefix(r).ok()).map_or_else(|| key.clone(), |p| p.to_string_lossy().into_owned());
+                let state = status.and_then(|s| s.files.get(&abs).copied());
+                let mark = self.reviewed.get(&(a.name.clone(), key.clone())).copied();
+                let reviewed = changes::is_reviewed(version, state, in_repo, mark);
+                files.push(ChangedFile { abs, repo_rel, key, state, created, version, reviewed });
+            };
+            for f in changes::agent_files(&self.activity.turns, &a.name) {
+                let abs = self.abs_path(&f.path);
+                add(f.path, abs, f.created, f.version);
+            }
+            // Worktree agents own their checkout, so every change there is theirs.
+            if let (Some(_), Some(st)) = (&a.worktree, status) {
+                let mut extra: Vec<(&PathBuf, &git::FileState)> = st.files.iter().collect();
+                extra.sort_by(|x, y| x.0.cmp(y.0));
+                let known: HashSet<PathBuf> = changes::agent_files(&self.activity.turns, &a.name).iter().map(|f| self.abs_path(&f.path)).collect();
+                for (abs, state) in extra {
+                    if !known.contains(abs) {
+                        let key = refs::relative(&self.root, abs).into_owned();
+                        add(key, abs.clone(), *state == git::FileState::Untracked, changes::Version::default());
+                    }
+                }
+                files.sort_by(|x, y| x.repo_rel.cmp(&y.repo_rel));
+            }
+            groups.push(ChangeGroup { agent: a.name.clone(), repo_root, worktree: a.worktree.as_ref().map(|w| w.1.clone()), files });
+        }
+        groups
+    }
+
+    /// Recompute the changed-files view and the per-agent unreviewed counts.
+    fn refresh_agent_views(&mut self) {
+        let groups = self.change_groups();
+        self.unreviewed = groups.iter().map(|g| (g.agent.clone(), g.unreviewed())).collect();
+        for v in [&mut self.view, &mut self.return_view] {
+            if let Some(View::AgentChanges(view)) = v {
+                view.set_groups(groups.clone());
+            }
+        }
+    }
+
+    fn compare_side(&self, idx: usize) -> CompareSide {
+        let a = &self.agents[idx];
+        let turns: Vec<&Turn> = self.activity.turns.iter().filter(|t| t.agent == a.name).collect();
+        let prompt = turns.last().map(|t| t.prompt.clone()).unwrap_or_default();
+        let commands = turns.iter().flat_map(|t| t.commands.iter().cloned()).collect();
+        let to_files = |stats: Vec<(String, Option<(usize, usize)>)>| stats.into_iter().map(|(path, counts)| CompareFile { path, counts, shared: false }).collect();
+        let mut side = CompareSide { agent: a.name.clone(), repo_root: None, where_: String::new(), files: Vec::new(), commands, prompt, note: None };
+        if let Some((path, branch)) = &a.worktree {
+            let wt = Repo { root: path.clone() };
+            side.repo_root = Some(path.clone());
+            let main_head = self.repo.as_ref().and_then(|r| r.head().ok());
+            let base = main_head.and_then(|h| wt.merge_base("HEAD", &h).ok()).unwrap_or_else(|| "HEAD".into());
+            side.where_ = format!("worktree {branch} vs {}", &base[..base.len().min(7)]);
+            match wt.numstat(&base, None) {
+                Ok(stats) => side.files = to_files(stats),
+                Err(e) => side.note = Some(format!("git: {e:#}")),
+            }
+            return side;
+        }
+        side.where_ = "main checkout".into();
+        let recorded = changes::agent_files(&self.activity.turns, &a.name);
+        let Some(repo) = &self.repo else {
+            side.files = recorded.into_iter().map(|f| CompareFile { path: f.path, counts: None, shared: false }).collect();
+            side.note = Some("not a git repository; line counts unavailable".into());
+            return side;
+        };
+        side.repo_root = Some(repo.root.clone());
+        let paths: Vec<String> = recorded.iter().filter_map(|f| self.abs_path(&f.path).strip_prefix(&repo.root).ok().map(|p| p.to_string_lossy().into_owned())).collect();
+        match repo.numstat("HEAD", Some(&paths)) {
+            Ok(stats) => {
+                let gone = paths.len().saturating_sub(stats.len());
+                side.files = to_files(stats);
+                let mut note = "files this agent edited; counts are uncommitted changes vs HEAD, including other agents' edits".to_string();
+                if gone > 0 {
+                    note.push_str(&format!("; {gone} more have no uncommitted changes"));
+                }
+                side.note = Some(note);
+            }
+            Err(e) => side.note = Some(format!("git: {e:#}")),
+        }
+        side
     }
 
     fn new_worktree_agent(&mut self, kind: AgentKind, name: &str) {
@@ -2281,6 +2517,7 @@ fn global_action(c: char) -> Option<Action> {
         'W' => Action::CloseAgent,
         'F' => Action::FormatDocument,
         'E' => Action::RecentFiles,
+        'C' => Action::AgentChanges,
         'n' => Action::NextAgent,
         'g' => Action::Sessions,
         'v' => Action::ToggleSplit,

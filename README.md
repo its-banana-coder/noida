@@ -94,7 +94,9 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 - **Exact status via hooks**: `⠙` working · `✓` finished · `!` needs permission
 - **Permission alerts** say what the agent wants to run
 - **Activity timeline** (`Alt+a`) of reads, edits and commands, plus a persistent history
-- **Handoff**: ask Codex to review Claude's changes, or the reverse
+- **Handoff**: ask Codex to review Claude's changes, or ask one agent to fix the other's review findings
+- **Changed files per agent** (`Alt+C`) with reviewed tracking; tabs show `○N` unreviewed files
+- **Compare two agents** side by side, or send the same prompt to both
 - **Worktree agents**: isolate an agent in its own git worktree, then apply its changes
 
 </td>

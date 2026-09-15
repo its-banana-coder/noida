@@ -108,7 +108,7 @@ impl Activity {
     }
 
     #[cfg(test)]
-    fn without_history(mut self) -> Self {
+    pub(crate) fn without_history(mut self) -> Self {
         self.history_file = None;
         self
     }
