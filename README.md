@@ -4,17 +4,17 @@
 
 ### Navigation-Oriented IDE for Developer Agents
 
-**Your coding agent on the right. Your code on the left. Every file it mentions is one click away.**
+**A lightweight terminal IDE for code your agent writes.** Your real Claude Code or Codex on the right, a proper editor on the left, and every file the agent mentions one click away. ~20 MB of RAM, no Electron.
 
 [![CI](https://github.com/its-banana-coder/noida/actions/workflows/ci.yml/badge.svg)](https://github.com/its-banana-coder/noida/actions/workflows/ci.yml)
 [![Status: alpha](https://img.shields.io/badge/status-early%20preview-orange)](#-project-status)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-b7410e?logo=rust)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20WSL2-555)](#-project-status)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20WSL2-555)](#-project-status)
 [![Works with Claude Code](https://img.shields.io/badge/works%20with-Claude%20Code-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Works with Codex](https://img.shields.io/badge/works%20with-Codex%20CLI-10a37f)](https://github.com/openai/codex)
 
-[Install](#-install) · [Features](#-features) · [Keys](#%EF%B8%8F-keybindings) · [Roadmap](#%EF%B8%8F-roadmap) · [Status](#-project-status) · [Feedback](#-feedback)
+[Website](https://its-banana-coder.github.io/noida/) · [Install](#-install) · [Features](#-features) · [Keys](#%EF%B8%8F-keybindings) · [Roadmap](#%EF%B8%8F-roadmap) · [Status](#-project-status) · [Feedback](#-feedback)
 
 </div>
 
@@ -25,13 +25,13 @@
 </p>
 
 > [!WARNING]
-> **Early preview (v0.1 alpha).** NOIDA is moving fast and has only been tested on Linux (WSL2). Expect rough edges and please [tell us what breaks](#-feedback).
+> **Early preview (alpha).** NOIDA is used daily on Linux and WSL2. CI builds and tests every commit on Linux and macOS, but hands-on Mac use is still limited. Expect rough edges and please [tell us what breaks](#-feedback).
 
 ---
 
 ## 💡 Why NOIDA
 
-Coding agents live in the terminal, but you still have to read the code they talk about. NOIDA is the cockpit between you and your agents:
+Coding agents live in the terminal, but you still open a heavy IDE just to read the code they talk about. NOIDA replaces that IDE for agent-driven work, and is the cockpit between you and your agents:
 
 - **It runs the real CLIs.** `claude` and `codex` run unmodified in real terminals, so your login, `CLAUDE.md`, MCP servers and slash commands all just work.
 - **It closes the loop.** Ask → see `file:line` → click → read the code → select → send it back. The whole loop takes seconds.
@@ -63,7 +63,7 @@ sudo apt install build-essential        # Debian/Ubuntu/WSL · macOS: xcode-sele
 cargo install --git https://github.com/its-banana-coder/noida
 ```
 
-> **Prebuilt binaries:** skip steps 1–2 by downloading `noida-<target>.tar.gz` for Linux x86_64 or macOS (Apple Silicon / Intel) from [GitHub Releases](https://github.com/its-banana-coder/noida/releases), then:
+> **Prebuilt binaries** (from the first tagged release on): skip steps 1–2 by downloading `noida-<target>.tar.gz` for Linux x86_64 or macOS (Apple Silicon / Intel) from [GitHub Releases](https://github.com/its-banana-coder/noida/releases), then:
 >
 > ```bash
 > tar xzf noida-*.tar.gz && sudo mv noida /usr/local/bin/    # or any directory on your PATH
@@ -98,7 +98,9 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 
 ### 🤖 Agents
 - **Real CLIs in real PTYs**, in tabs or split side by side (`Alt+v`)
+- **Many sessions, like VS Code**: `+` on the tab bar or `Alt+N` starts a new Claude session; tabs are named after the conversation and can be renamed; `✕` closes one
 - **Sessions** (`Alt+g`): switch tabs or resume any past Claude/Codex conversation. Everything is restored on the next launch.
+- **Browse history** (`Alt+H`): read past conversations as formatted transcripts, then resume one with `r`
 - **Exact status via hooks**: `⠙` working · `✓` finished · `!` needs permission
 - **Permission alerts** say what the agent wants to run
 - **Activity timeline** (`Alt+a`) of reads, edits and commands, plus a persistent history
@@ -117,6 +119,7 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 - **Find and copy in agent output**: `Alt+?` searches the scrollback too; drag with the mouse to copy
 - **Keyboard jumps**: `Alt+j` labels every reference on screen
 - **Send context**: `Alt+s` selection · `Alt+S` file · `Alt+e` explain / refactor / find bugs / write tests / fix problem
+- **Editor context sharing**: when you prompt Claude, it's told which file and lines you're looking at (toggle in the palette)
 
 </td>
 </tr>
@@ -127,6 +130,8 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 - Branch and change count, tree markers, gutter change bars
 - **Review changes** (`Alt+r`): **accept** (stage) or **reject** (revert) each hunk, whole files, or everything
 - After a turn, `Alt+r` opens only the files the agent changed
+- **Staged view** (`s` in review) with unstage by hunk or file
+- **Commit log** and **file history** with read-only commit diffs
 - Switch branch, new branch, commit
 
 </td>
@@ -161,6 +166,7 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 - **Outline** panel that follows the cursor
 - Files reload automatically when agents edit them
 - **NOIDA Dark / Light** themes and `~/.config/noida/settings.json`
+- **Custom keybindings**, plus `Ctrl+Shift` shortcuts in kitty-protocol terminals
 
 </td>
 </tr>
@@ -200,7 +206,9 @@ Also on a Mac:
 | `Alt+1/2/3` | Focus files / editor / agent | `Alt+0` | Toggle file tree |
 | `Alt+j` | Jump to a reference in agent output | `Alt+g` | Sessions: switch, new, resume |
 | `Alt+n` / `Alt+v` / `Alt+w` | Next agent / split / other pane | `Alt+s` / `Alt+S` | Send selection / file |
-| `Alt+W`, click `✕` | Close agent tab | `Alt+F` | Format document |
+| `Alt+N`, click `+` | New Claude session | `Alt+W`, click `✕` | Close agent tab |
+| `Alt+H` | Browse past conversations | `Alt+C` | Changed files per agent |
+| `Alt+F` | Format document | | |
 | `Alt+e` | Ask agent… | `Alt+/` | Search in workspace |
 | `Alt+r` | Review changes | `Alt+a` | Agent activity |
 | `Alt+l` / `Alt+k` | Symbols in file / project | `Alt+i` | Problems |
@@ -240,7 +248,9 @@ Also on a Mac:
 
 **File tree**: `↑/↓` or `j/k` move · `Enter` open · `Space` preview · `←/→` collapse/expand · `a` new file · `A` new folder · `r`/`F2` rename · `d` delete · `y`/`Y` copy path · `o` reveal in file manager · `Tab` outline · `R` refresh
 
-**Review changes**: `↑/↓` hunks · `Tab` next file · `a` accept hunk · `x` reject hunk · `A`/`X` whole file · `Enter` open · `r` refresh · `Esc` close
+**Review changes**: `↑/↓` hunks · `Tab` next file · `a` accept hunk · `x` reject hunk · `A`/`X` whole file · `s` switch to staged changes · `u`/`U` unstage hunk/file · `Enter` open · `r` refresh · `Esc` close
+
+**Past conversation** (`Alt+H`): `↑/↓` `PgUp/PgDn` scroll · `r` resume in a new tab · `Esc` close
 
 **Agent pane**: every key goes to the agent · mouse wheel scrolls back · `Alt+?` finds text in the output and scrollback (`Enter`/`↓` next, `↑` previous, `Esc` close; capitals make it case-sensitive) · drag to select and copy (unless the app uses the mouse itself) · **Agent: Copy Visible Output** in `Alt+x` copies the screen · click a highlighted path or symbol to open it · click `✕` on a tab (or middle-click it) to close it
 
@@ -271,38 +281,19 @@ Run **Help: Keyboard Shortcuts** from the palette to see every action's id and c
 
 ## 🗺️ Roadmap
 
-NOIDA's goal is to be **the cockpit between developers and coding agents**, not another general-purpose editor. The editor, tree and terminal exist to make the agent workflow fast.
+NOIDA's goal is to be **the cockpit between developers and coding agents**: a lightweight replacement for heavy IDEs when the agent does most of the typing. The editor, tree and terminal exist to make that workflow fast.
 
-### ✅ v0.1 · Foundation *(shipped, early preview)*
-- [x] Real agent CLIs in PTYs: tabs, split panes, sessions and resume, workspace restore
-- [x] Clickable file and symbol references, keyboard jumps, sending context to agents
-- [x] Hook-based agent status, permission alerts, activity timeline, history, handoff
-- [x] Git review with hunk accept/reject, worktree agents
-- [x] Tree-sitter symbols and LSP (diagnostics, hover, definition, references, rename, code actions, format)
-- [x] Multi-cursor editor, find/replace, workspace search/replace, folding, wrap, sticky scroll, breadcrumbs
-- [x] Command palette, file tree operations, outline, tabs, themes, settings
+### ✅ Shipped
+- [x] **Foundation:** real agent CLIs in PTYs, sessions and resume, clickable file and symbol references, hook-based status and activity, hunk-by-hunk review, worktree agents, LSP and tree-sitter, multi-cursor editor, workspace search, command palette
+- [x] **Editor completeness:** split editor, custom keybindings, kitty keyboard protocol, Markdown preview, find and copy in agent panes, git staged view, log and file history
+- [x] **Deeper agent integration:** editor context sharing, changed files per agent with review tracking, compare two agents, send one prompt to two agents, implement → review → fix handoffs
+- [x] **Sessions like VS Code:** new session button, conversation-named tabs, rename, browsing past conversations
+- [x] **Hardening:** CI on Linux and macOS, release workflow, issue templates, [website](https://its-banana-coder.github.io/noida/)
 
-### 🔨 v0.2 · Hardening *(next)*
-- [x] CI on Linux and macOS
-- [x] Release workflow with prebuilt binaries for Linux and macOS
-- [ ] `v0.1.0-alpha` GitHub release
-- [x] Issue templates
-- [ ] Smoke-test checklist
-- [ ] macOS verification, and testing with more terminals and language servers
-- [ ] Hands-on polish for features that so far only have unit tests (see [status](#-project-status))
-
-### 🧩 v0.3 · Editor completeness
-- [x] Split editor (two editor groups, `Ctrl+\`)
-- [x] Custom keybindings in `settings.json`
-- [x] Kitty keyboard protocol, which enables `Ctrl+Shift+P/F/O/H/K/T` in terminals that support it
-- [x] Search and mouse copy inside agent/terminal panes
-- [x] Git: staged view with unstage, commit log, file history
-
-### 🤝 v0.4 · Deeper agent integration
-- [x] **Share editor context**: agents automatically know which file, line and selection you're looking at when you prompt
-- [x] Compare the same task across agents or worktrees, side by side
-- [x] Richer handoff flows (implement → review → fix)
-- [x] Changed-files panel per agent, with `✓ reviewed` tracking
+### 🔨 Next
+- [ ] First `v0.1.0-alpha` release with prebuilt Linux and macOS binaries
+- [ ] Hands-on macOS testing (iTerm2, Ghostty, Terminal.app) and more language servers
+- [ ] Smoke-test checklist, and hands-on polish for features that so far only have unit tests (see [status](#-project-status))
 
 ### 🔭 Later
 - [ ] Remote development over SSH
@@ -311,7 +302,7 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**, not 
 - [ ] Optional small local model for cheap context work (summarising files, finding relevant code) to cut agent token use
 
 ### 🚫 Non-goals
-Extension marketplace · built-in AI chat or model · accounts and cloud sync · browser · notebooks · Docker/package-manager UIs · hundreds of themes. Each of these would pull NOIDA toward becoming another VS Code.
+Extension marketplace · built-in AI chat or model · accounts and cloud sync · browser · notebooks · debugger · Docker/package-manager UIs · hundreds of themes. NOIDA stays small on purpose; the terminal and your agent do the rest.
 
 ---
 
@@ -319,9 +310,10 @@ Extension marketplace · built-in AI chat or model · accounts and cloud sync ·
 
 | | |
 |---|---|
-| ✅ **Tested live** (Linux/WSL2, tmux and Windows Terminal, Claude Code 2.1, Codex CLI, rust-analyzer) | Reference clicking and jumps · agent tabs, split, hook status, activity, sessions/resume, workspace restore · hunk review · worktree agents · definition/references/problems/hover/rename · editing, multi-cursor, find widget, reload on external change |
-| 🧪 **Unit-tested, little hands-on use** | Workspace search/replace · tab actions · file tree operations · outline · folding, wrap, sticky scroll · code actions · formatting · light theme |
-| ❔ **Not tested yet** | macOS · native Windows · other terminals · very large repos · language servers other than rust-analyzer |
+| ✅ **Tested live** (Linux/WSL2, tmux and Windows Terminal, Claude Code 2.1, Codex CLI, rust-analyzer) | Reference clicking and jumps · agent tabs, split, hook status, activity, sessions/resume, new-session button, rename, history browser, workspace restore · hunk review, staged view, log and file history · worktree agents · definition/references/problems/hover/rename · editing, multi-cursor, find widget, split editor, Markdown preview · find and copy in agent panes · custom keybindings · changed files per agent |
+| 🍎 **macOS** | Builds and all tests pass in CI on every commit; little hands-on use yet |
+| 🧪 **Unit-tested, little hands-on use** | `Ctrl+Shift` shortcuts (kitty protocol) · compare agents, send prompt to two agents, fix-findings handoff · editor context sharing · workspace search/replace · tab and file tree actions · folding, wrap, sticky scroll · code actions, formatting · light theme |
+| ❔ **Not tested yet** | Native Windows (not supported) · very large repos · language servers other than rust-analyzer |
 
 **Good to know**
 - 💥 Agents run inside NOIDA, so a crash stops them too. Your terminal is restored, and conversations can be resumed via **Sessions** (`Alt+g`).
@@ -383,6 +375,8 @@ cargo test         # unit tests
 | `src/actions.rs` · `src/picker.rs` | Command registry, fuzzy picker |
 | `src/workspace.rs` · `src/settings.rs` · `src/theme.rs` · `src/events.rs` | Session restore, settings, palettes, background event bus |
 | `src/tree.rs` | File tree |
+| `src/markdown.rs` · `src/keys.rs` · `src/changes.rs` | Markdown preview, key specs for custom bindings, per-agent review tracking |
+| `src/app/groups.rs` · `src/app/agent_views.rs` | Split editor groups, changed-files and compare views |
 
 </details>
 

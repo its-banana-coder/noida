@@ -370,7 +370,8 @@
           <li><strong>Multi-cursor</strong> with <kbd>Ctrl+D</kbd>, column selection, regex find and replace</li>
           <li><strong>Workspace search and replace</strong> with a preview of every change</li>
           <li>Tree-sitter outline, breadcrumbs, sticky scroll, folding, Markdown preview</li>
-          <li>File tree operations, fuzzy open, command palette, tabs, git gutter</li>
+          <li>File tree operations, fuzzy open, command palette, split editor, tabs</li>
+          <li>Git gutter, staged view, commit log and file history, custom keybindings</li>
         </ul>
       </div>
       <div>
@@ -379,7 +380,8 @@
           <li><strong>Review every hunk</strong> the agent changed, then accept it into git or reject it from disk</li>
           <li><strong>Know what the agent is doing:</strong> working, finished or waiting for permission, with a timeline of reads, edits and commands</li>
           <li><strong>Share what you're looking at:</strong> the agent is told your open file and selection when you prompt</li>
-          <li><strong>Run agents side by side,</strong> resume old conversations, or isolate one in its own git worktree</li>
+          <li><strong>Run many sessions, like VS Code:</strong> a new session is one click away, tabs are named after the conversation, and past conversations can be read and resumed</li>
+          <li><strong>Race or pair agents:</strong> run Claude and Codex side by side, send both the same prompt, compare their changes, or isolate one in a git worktree</li>
           <li class="muted">No extensions and no debugger, on purpose. The terminal still does the rest.</li>
         </ul>
       </div>
@@ -408,45 +410,46 @@
 
   <section id="roadmap" aria-labelledby="road-h">
     <h2 id="road-h">Where it's heading.</h2>
-    <p class="prose muted">NOIDA is an early preview. It runs daily on Linux and WSL2; macOS is untested so far. Here's what's done and what comes next.</p>
+    <p class="prose muted">NOIDA is an early preview, moving fast. Here's what has shipped and what comes next.</p>
     <ol class="road">
       <li class="done">
-        <h3>Foundation <span class="when">v0.1, shipped</span></h3>
+        <h3>Foundation <span class="when">shipped</span></h3>
         <ul>
-          <li>Agent tabs, split panes, sessions and resume</li>
+          <li>Real agent CLIs, sessions and resume</li>
           <li>Clickable file and symbol references</li>
           <li>Hook-based status, activity and handoff</li>
           <li>Hunk-by-hunk review, worktree agents</li>
           <li>LSP and tree-sitter code intelligence</li>
-          <li>Multi-cursor editor, search, Markdown preview</li>
+          <li>Multi-cursor editor, workspace search</li>
+        </ul>
+      </li>
+      <li class="done">
+        <h3>Editor and agent depth <span class="when">shipped</span></h3>
+        <ul>
+          <li>Split editor, custom keybindings, <kbd>Ctrl+Shift</kbd> shortcuts</li>
+          <li>Find and copy inside agent panes</li>
+          <li>Git staged view, log and file history</li>
+          <li>Editor context shared with agents</li>
+          <li>Changed files per agent, compare agents</li>
+          <li>New sessions, named tabs, conversation history</li>
         </ul>
       </li>
       <li class="next">
-        <h3>Hardening <span class="when">next</span></h3>
+        <h3>First release <span class="when">next</span></h3>
         <ul>
-          <li>CI on Linux and macOS</li>
-          <li>Prebuilt binaries for each release</li>
-          <li>Verified on Mac terminals</li>
-          <li>Editor context shared with agents</li>
+          <li>Prebuilt Linux and macOS binaries</li>
+          <li>Hands-on testing in Mac terminals</li>
+          <li>More language servers verified</li>
+          <li>Polish from early feedback</li>
         </ul>
       </li>
       <li>
-        <h3>Editor completeness</h3>
+        <h3>Later</h3>
         <ul>
-          <li>Split editor groups</li>
-          <li>Custom keybindings</li>
-          <li><kbd>Ctrl+Shift</kbd> shortcuts via the kitty keyboard protocol</li>
-          <li>Search and copy inside agent panes</li>
-          <li>Git log, file history, unstage</li>
-        </ul>
-      </li>
-      <li>
-        <h3>Deeper agent workflows</h3>
-        <ul>
-          <li>Compare the same task across agents</li>
-          <li>Implement, review and fix handoffs</li>
-          <li>Per-agent changed files with review tracking</li>
           <li>Remote projects over SSH</li>
+          <li>Project map for monorepos</li>
+          <li>Task board across agents</li>
+          <li>Optional local model for cheap context work</li>
         </ul>
       </li>
     </ol>
@@ -455,7 +458,7 @@
   <section aria-labelledby="status-h">
     <h2 id="status-h">Before you try it.</h2>
     <div class="status-grid">
-      <div><h3>It's alpha</h3><p>Tested live on Linux and WSL2 with Claude Code, Codex and rust-analyzer. Expect rough edges elsewhere.</p></div>
+      <div><h3>It's alpha</h3><p>Used daily on Linux and WSL2 with Claude Code, Codex and rust-analyzer. CI builds and tests every commit on macOS too, but hands-on Mac use is still limited.</p></div>
       <div><h3>Your agent stays yours</h3><p>NOIDA runs the real CLI and adds its hooks per session. Your Claude and Codex config files are never modified.</p></div>
       <div><h3>Commit before rejecting</h3><p>Rejecting a hunk reverts it on disk. Destructive actions ask twice, but git is your undo.</p></div>
     </div>
