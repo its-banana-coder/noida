@@ -17,6 +17,8 @@ pub enum Target {
     File { path: PathBuf, line: Option<usize>, col: Option<usize> },
     Action(Action),
     Branch(String),
+    /// A commit hash, limited to `paths` (file history) unless empty.
+    Commit { hash: String, paths: Vec<String> },
     History(usize),
     AgentTab(usize),
     CodeAction(usize),

@@ -102,6 +102,8 @@ pub enum Action {
     SwitchBranch,
     NewBranch,
     Commit,
+    GitLog,
+    FileHistory,
     AgentActivity,
     AgentHistory,
     Handoff { from: usize, to: usize },
@@ -197,6 +199,8 @@ impl Action {
             Action::SwitchBranch => s("Git: Switch Branch…", ""),
             Action::NewBranch => s("Git: New Branch…", ""),
             Action::Commit => s("Git: Commit Staged…", ""),
+            Action::GitLog => s("Git: Log…", ""),
+            Action::FileHistory => s("Git: File History…", ""),
             Action::AgentActivity => s("Agent: Activity & Timeline", "Alt+a"),
             Action::AgentHistory => s("Agent: History", ""),
             Action::Handoff { .. } => None,
@@ -246,7 +250,7 @@ impl Action {
         use Action::*;
         let mut v = vec![
             QuickOpen, SearchWorkspace, ReplaceWorkspace, GoToSymbol, Hover, RenameSymbol, CodeActions, FormatDocument, FormatSelection, OrganizeImports, GoToProjectSymbol, GoToDefinition, FindReferences, Problems, FixProblem,
-            ReviewChanges, AcceptAllChanges, SwitchBranch, NewBranch, Commit,
+            ReviewChanges, AcceptAllChanges, SwitchBranch, NewBranch, Commit, GitLog, FileHistory,
             Sessions, AgentActivity, AgentHistory, ToggleShareContext, AskMenu, SendSelection, SendFile, SendSymbol,
         ];
         v.extend(self::Ask::ALL.map(Action::Ask));

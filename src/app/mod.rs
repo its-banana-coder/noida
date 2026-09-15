@@ -1687,6 +1687,25 @@ impl App {
             }
             Action::NewBranch => self.mode = Mode::Prompt { kind: PromptKind::NewBranch, input: String::new() },
             Action::Commit => self.mode = Mode::Prompt { kind: PromptKind::Commit, input: String::new() },
+            Action::GitLog => {
+                let Some(repo) = &self.repo else { return self.error("not a git repository") };
+                match repo.log(git::LOG_LIMIT) {
+                    Ok(log) if log.is_empty() => self.info("no commits yet"),
+                    Ok(log) => self.mode = Mode::Picker(Picker::new("Git Log", Kind::Static, commit_items(log)).ordered()),
+                    Err(e) => self.error(format!("{e:#}")),
+                }
+            }
+            Action::FileHistory => {
+                let Some(repo) = &self.repo else { return self.error("not a git repository") };
+                let Some(path) = self.doc().map(|d| d.path.clone()) else { return self.info("open a file first") };
+                let Ok(rel) = path.strip_prefix(&repo.root) else { return self.error("file is outside the repository") };
+                let rel = rel.to_string_lossy().into_owned();
+                match repo.file_history(&rel, git::LOG_LIMIT) {
+                    Ok(log) if log.is_empty() => self.info(format!("no commits touch {rel}")),
+                    Ok(log) => self.mode = Mode::Picker(Picker::new(format!("History: {rel}"), Kind::Static, commit_items(log)).ordered()),
+                    Err(e) => self.error(format!("{e:#}")),
+                }
+            }
             Action::AgentActivity => {
                 self.view = Some(View::Activity(ActivityView::new("Agent Activity".into(), self.root.clone(), self.activity.turns.clone())));
                 self.focus = Focus::Editor;
@@ -1848,6 +1867,21 @@ impl App {
             }
             Target::Action(a) => self.run(a),
             Target::Branch(b) => self.git_op(|r| r.switch(&b).map(|_| format!("switched to {b}"))),
+            Target::Commit { hash, paths } => {
+                let Some(repo) = self.repo.clone() else { return self.error("not a git repository") };
+                let short: String = hash.chars().take(7).collect();
+                let title = match paths.first() {
+                    Some(p) => format!("Commit {short} · {p}"),
+                    None => format!("Commit {short}"),
+                };
+                match ReviewView::commit(title, repo, hash, paths) {
+                    Ok(v) => {
+                        self.view = Some(View::Review(v));
+                        self.focus = Focus::Editor;
+                    }
+                    Err(e) => self.error(e),
+                }
+            }
             Target::History(i) => {
                 if let Some(t) = self.history.get(i).cloned() {
                     self.view = Some(View::Activity(ActivityView::new(format!("History: {}", t.agent), self.root.clone(), vec![t])));
@@ -2245,6 +2279,25 @@ impl App {
         };
         p.set_items(items);
     }
+}
+
+/// Picker items for `git log` / file history. For file history each commit is
+/// limited to the file's path there plus its older name, so renames show up.
+fn commit_items(log: Vec<git::Commit>) -> Vec<Item> {
+    let older: Vec<Option<String>> = log.iter().skip(1).map(|c| c.path.clone()).chain([None]).collect();
+    log.into_iter()
+        .zip(older)
+        .map(|(c, older)| {
+            let label = format!("{} {}", c.short, c.subject);
+            let mut paths: Vec<String> = c.path.into_iter().collect();
+            if let Some(o) = older.filter(|o| !paths.contains(o)) {
+                if !paths.is_empty() {
+                    paths.push(o);
+                }
+            }
+            Item::new(label, c.author, Target::Commit { hash: c.hash, paths }).hint(c.date)
+        })
+        .collect()
 }
 
 fn session_tab_items(agents: &[Agent]) -> Vec<Item> {
