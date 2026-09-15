@@ -71,7 +71,9 @@ impl Drop for Server {
 }
 
 fn read_message(mut stream: UnixStream) -> Option<(usize, Vec<AgentEvent>)> {
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    // macOS rejects SO_RCVTIMEO (EINVAL) once the peer has closed, which hook
+    // clients do right after writing; the data is still readable, so ignore it.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     // Read until EOF; keep what arrived even if the read times out.
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 8192];
