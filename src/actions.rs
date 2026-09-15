@@ -156,6 +156,8 @@ pub enum Action {
 const IDS: &[(Action, &str)] = &[
     (Action::CommandPalette, "command_palette"),
     (Action::SplitEditor, "split_editor"),
+    (Action::GitLog, "git_log"),
+    (Action::FileHistory, "file_history"),
     (Action::FocusOtherEditorGroup, "focus_other_editor_group"),
     (Action::CloseEditorGroup, "close_editor_group"),
     (Action::MoveTabToOtherGroup, "move_tab_to_other_group"),
