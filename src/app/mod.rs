@@ -22,6 +22,7 @@ use crate::actions::{Action, AgentKind};
 use crate::activity::{Activity, Notice, Turn};
 use crate::agent::{Agent, HINT_KEYS, hint_label};
 use crate::editor::{Click, Doc, KeyResult, SearchOpts, Syntax};
+use crate::keys::{self, Keymap};
 use crate::settings::{self, Settings};
 use crate::events::Bg;
 use crate::git::{self, Repo};
@@ -144,6 +145,8 @@ pub struct App {
     forward: Vec<Loc>,
     last_search: Option<(String, SearchOpts)>,
     settings: Settings,
+    /// Parsed `settings.keys`.
+    keymap: Keymap,
     parked_search: Option<View>,
     closed: Vec<Loc>,
     mru: Vec<PathBuf>,
@@ -225,6 +228,7 @@ impl App {
             forward: Vec::new(),
             last_search: None,
             settings: Settings::default(),
+            keymap: Keymap::new(),
             parked_search: None,
             closed: Vec::new(),
             mru: Vec::new(),
@@ -269,7 +273,14 @@ impl App {
         };
         app.rebuild_index();
         match settings::load() {
-            Ok(s) => app.settings = s,
+            Ok(s) => {
+                let (keymap, bad) = keys::keymap(&s.keys);
+                app.keymap = keymap;
+                app.settings = s;
+                if !bad.is_empty() {
+                    app.error(format!("settings.json keys: {}", bad.join(", ")));
+                }
+            }
             Err(e) => app.error(e),
         }
 
@@ -795,6 +806,7 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) {
+        let key = keys::normalize(key);
         // Leader key: Ctrl+] then a key acts like Alt+key. Works on macOS
         // terminals where Option types characters instead of sending Alt.
         let is_leader = key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char(']' | '5'));
@@ -825,18 +837,18 @@ impl App {
         if !matches!(self.mode, Mode::Normal) {
             return self.on_mode_key(key);
         }
+        match global_binding(&self.keymap, key) {
+            Some(Some(action)) => return self.run(action),
+            Some(None) => return self.focus_key(key),
+            None => {}
+        }
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if alt && !ctrl {
-            if let KeyCode::Char(c) = key.code {
-                match c {
-                    '<' | ',' => return self.agent_pct = (self.agent_pct + 5).min(85),
-                    '>' => return self.agent_pct = self.agent_pct.saturating_sub(5).max(15),
-                    _ => {}
-                }
-                if let Some(action) = global_action(c) {
-                    return self.run(action);
-                }
+            match key.code {
+                KeyCode::Char('<' | ',') => return self.agent_pct = (self.agent_pct + 5).min(85),
+                KeyCode::Char('>') => return self.agent_pct = self.agent_pct.saturating_sub(5).max(15),
+                _ => {}
             }
         }
         if self.focus != Focus::Agent && ctrl {
@@ -846,6 +858,10 @@ impl App {
                 _ => {}
             }
         }
+        self.focus_key(key)
+    }
+
+    fn focus_key(&mut self, key: KeyEvent) {
         match self.focus {
             Focus::Tree => self.tree_key(key),
             Focus::Editor => {
@@ -974,6 +990,7 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             KeyCode::Char('g') if ctrl => return self.run(Action::GoToLine),
+            KeyCode::Char('K') if ctrl && !alt => return self.editor_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)),
             KeyCode::Char('f') if ctrl => return self.run(Action::Find),
             KeyCode::Char('h') if ctrl => return self.run(Action::FindReplace),
             KeyCode::F(3) if shift => return self.find_step(false),
@@ -1448,7 +1465,8 @@ impl App {
 
     pub fn run(&mut self, action: Action) {
         match action {
-            Action::CommandPalette | Action::Keys => self.open_palette(),
+            Action::CommandPalette => self.open_palette(),
+            Action::Keys => self.open_keys(),
             Action::QuickOpen => {
                 if self.index_built.is_none_or(|t| t.elapsed() > Duration::from_secs(10)) {
                     self.rebuild_index();
@@ -1825,7 +1843,7 @@ impl App {
     fn open_palette(&mut self) {
         let mut items: Vec<Item> = Action::palette()
             .into_iter()
-            .filter_map(|a| a.describe().map(|(label, key)| Item::new(label, "", Target::Action(a)).hint(key)))
+            .filter_map(|a| a.describe().map(|(label, key)| Item::new(label, "", Target::Action(a)).hint(self.shortcut_hint(a, key))))
             .collect();
         for (fi, from) in self.agents.iter().enumerate() {
             let Some(turn) = self.activity.last_turn(&from.name) else { continue };
@@ -1836,6 +1854,30 @@ impl App {
             }
         }
         self.mode = Mode::Picker(Picker::new("Command Palette", Kind::Static, items));
+    }
+
+    /// Every action with its settings.json id and current shortcut.
+    fn open_keys(&mut self) {
+        let items: Vec<Item> = std::iter::once(Action::CommandPalette)
+            .chain(Action::palette())
+            .filter_map(|a| Some((a, a.id()?)))
+            .filter_map(|(a, id)| a.describe().map(|(label, key)| Item::new(label, id, Target::Action(a)).hint(self.shortcut_hint(a, key))))
+            .collect();
+        self.mode = Mode::Picker(Picker::new("Keyboard Shortcuts · ids for \"keys\" in settings.json", Kind::Static, items));
+    }
+
+    /// Custom bindings, then the built-in hint unless its key was disabled in settings.
+    fn shortcut_hint(&self, action: Action, default: &str) -> String {
+        let mut custom: Vec<String> = self.keymap.iter().filter(|(_, a)| **a == Some(action)).map(|(k, _)| keys::display(k)).collect();
+        custom.sort();
+        let disabled = keys::parse(default).is_some_and(|k| self.keymap.contains_key(&k));
+        if !default.is_empty() && !disabled {
+            custom.push(default.to_string());
+        }
+        if let Some(h) = keys::ctrl_shift_hint(action).filter(|h| keys::enhanced() && !self.keymap.contains_key(&keys::parse(h).unwrap_or_default())) {
+            custom.push(h.to_string());
+        }
+        custom.join(", ")
     }
 
     fn accept(&mut self, target: Target, query: &str, kind: Kind) {
@@ -2263,6 +2305,21 @@ fn session_tab_items(agents: &[Agent]) -> Vec<Item> {
     items
 }
 
+/// Shortcut that applies in every pane: a custom binding from settings, else a
+/// built-in Ctrl+Shift or Alt shortcut. `Some(None)` means disabled in settings.
+fn global_binding(keymap: &Keymap, key: KeyEvent) -> Option<Option<Action>> {
+    if let Some(bound) = keys::spec(key).and_then(|s| keymap.get(&s)) {
+        return Some(*bound);
+    }
+    if let Some(a) = keys::ctrl_shift_action(key) {
+        return Some(Some(a));
+    }
+    match key.code {
+        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::ALT) && !key.modifiers.contains(KeyModifiers::CONTROL) => global_action(c).map(Some),
+        _ => None,
+    }
+}
+
 /// Alt+key shortcuts that work from every pane. Chosen to avoid Claude Code's
 /// own Meta bindings (p, t, b, f, m) and terminal escape ambiguities (O, [, \).
 fn global_action(c: char) -> Option<Action> {
@@ -2327,6 +2384,23 @@ mod tests {
         assert_eq!(base64(b"hello"), "aGVsbG8=");
         assert_eq!(base64(b"hi!"), "aGkh");
         assert_eq!(base64(b"h"), "aA==");
+    }
+
+    #[test]
+    fn custom_and_ctrl_shift_bindings() {
+        let cs = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        let empty = Keymap::new();
+        assert_eq!(global_binding(&empty, KeyEvent::new(KeyCode::Char('P'), cs)), Some(Some(Action::CommandPalette)));
+        assert_eq!(global_binding(&empty, KeyEvent::new(KeyCode::Char('p'), cs)), Some(Some(Action::CommandPalette)));
+        assert_eq!(global_binding(&empty, KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)), None);
+        // Kitty reports Alt+Shift+s as lowercase with SHIFT; it must still be Alt+S.
+        assert_eq!(global_binding(&empty, keys::normalize(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT | KeyModifiers::SHIFT))), Some(Some(Action::SendFile)));
+        let settings: HashMap<String, String> = [("alt+y", "quick_open"), ("alt+n", "none"), ("ctrl+shift+p", "search_workspace")].map(|(k, v)| (k.into(), v.into())).into();
+        let (map, bad) = keys::keymap(&settings);
+        assert!(bad.is_empty());
+        assert_eq!(global_binding(&map, KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT)), Some(Some(Action::QuickOpen)));
+        assert_eq!(global_binding(&map, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT)), Some(None));
+        assert_eq!(global_binding(&map, KeyEvent::new(KeyCode::Char('P'), cs)), Some(Some(Action::SearchWorkspace)));
     }
 
     #[test]

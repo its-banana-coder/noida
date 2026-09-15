@@ -232,6 +232,27 @@ Also on a Mac:
 
 </details>
 
+### Ctrl+Shift shortcuts
+
+In terminals that support the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) (kitty, WezTerm, Ghostty, foot, recent iTerm2), NOIDA also accepts `Ctrl+Shift+P` palette · `Ctrl+Shift+F` / `Ctrl+Shift+H` search / replace in workspace · `Ctrl+Shift+O` symbols in file · `Ctrl+Shift+K` delete line · `Ctrl+Shift+T` reopen closed tab · `Ctrl+Shift+E` file tree. Other terminals send these as plain `Ctrl+key`. Start with `--no-kitty-keys` to turn the protocol off.
+
+### Custom keybindings
+
+Add a `keys` map to `~/.config/noida/settings.json` (`Alt+x` → *Preferences: Open Settings*). Keys look like `alt+y`, `ctrl+alt+k`, `ctrl+shift+p`, `f5`; `alt+S` is the same as `alt+shift+s`. Map a key to `""` or `"none"` to free a built-in shortcut for your agent:
+
+```json
+{
+  "keys": {
+    "alt+y": "command_palette",
+    "f5": "review_changes",
+    "ctrl+alt+k": "new_agent_claude",
+    "alt+n": "none"
+  }
+}
+```
+
+Run **Help: Keyboard Shortcuts** from the palette to see every action's id and current shortcut. Custom bindings work in every pane, including the agent pane, and are read at startup; invalid entries are reported in the status bar.
+
 ---
 
 ## 🗺️ Roadmap
@@ -256,8 +277,8 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**, not 
 
 ### 🧩 v0.3 · Editor completeness
 - [ ] Split editor (two editor groups, `Ctrl+\`)
-- [ ] Custom keybindings in `settings.json`
-- [ ] Kitty keyboard protocol, which enables `Ctrl+Shift+P/F/O/H/K/T` in terminals that support it
+- [x] Custom keybindings in `settings.json`
+- [x] Kitty keyboard protocol, which enables `Ctrl+Shift+P/F/O/H/K/T` in terminals that support it
 - [ ] Search and mouse copy inside agent/terminal panes
 - [ ] Git: staged view with unstage, commit log, file history
 

@@ -587,6 +587,26 @@ mod tests {
     }
 
     #[test]
+    fn kitty_reported_keys_encode_like_legacy() {
+        // What crossterm produces for CSI u sequences under DISAMBIGUATE_ESCAPE_CODES
+        // (+ REPORT_ALTERNATE_KEYS), after `keys::normalize`.
+        let k = |code, m| encode_key(crate::keys::normalize(KeyEvent::new(code, m)), false);
+        let (c, a, s) = (KeyModifiers::CONTROL, KeyModifiers::ALT, KeyModifiers::SHIFT);
+        assert_eq!(k(KeyCode::Esc, KeyModifiers::NONE), b"\x1b");
+        assert_eq!(k(KeyCode::Enter, KeyModifiers::NONE), b"\r");
+        assert_eq!(k(KeyCode::Tab, KeyModifiers::NONE), b"\t");
+        assert_eq!(k(KeyCode::BackTab, s), b"\x1b[Z");
+        assert_eq!(k(KeyCode::Char('c'), c), vec![3]);
+        assert_eq!(k(KeyCode::Char(']'), c), vec![0x1d]);
+        assert_eq!(k(KeyCode::Char('b'), a), b"\x1bb");
+        assert_eq!(k(KeyCode::Char('s'), a | s), b"\x1bS");
+        assert_eq!(k(KeyCode::Char('S'), a), b"\x1bS");
+        assert_eq!(k(KeyCode::Char('<'), a), b"\x1b<");
+        assert_eq!(k(KeyCode::Char('p'), c | s), vec![0x10]);
+        assert_eq!(k(KeyCode::Backspace, KeyModifiers::NONE), vec![0x7f]);
+    }
+
+    #[test]
     fn answers_cursor_query() {
         let mut p = vt100::Parser::new_with_callbacks(10, 20, 0, Responder::default());
         p.process(b"ab\x1b[6n\x1b]11;?\x07");
