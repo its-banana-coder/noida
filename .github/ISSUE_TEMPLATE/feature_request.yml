@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest an idea or improvement for NOIDA
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        NOIDA aims to be the cockpit between developers and coding agents, not another general-purpose editor. Please check the [roadmap and non-goals](https://github.com/its-banana-coder/noida#%EF%B8%8F-roadmap) first.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what makes it hard today?
+      placeholder: When an agent edits several files, I can't tell ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like NOIDA to handle it? Keybindings, UI, or behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use today, or how other tools solve it.
+    validations:
+      required: false
+
+  - type: input
+    id: agent
+    attributes:
+      label: Agent CLI
+      description: Which agent(s) this relates to, if any.
+      placeholder: Claude Code, Codex CLI
+    validations:
+      required: false

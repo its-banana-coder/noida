@@ -6,6 +6,7 @@
 
 **Your coding agent on the right. Your code on the left. Every file it mentions is one click away.**
 
+[![CI](https://github.com/its-banana-coder/noida/actions/workflows/ci.yml/badge.svg)](https://github.com/its-banana-coder/noida/actions/workflows/ci.yml)
 [![Status: alpha](https://img.shields.io/badge/status-early%20preview-orange)](#-project-status)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-b7410e?logo=rust)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -61,6 +62,13 @@ sudo apt install build-essential        # Debian/Ubuntu/WSL · macOS: xcode-sele
 ```bash
 cargo install --git https://github.com/its-banana-coder/noida
 ```
+
+> **Prebuilt binaries:** skip steps 1–2 by downloading `noida-<target>.tar.gz` for Linux x86_64 or macOS (Apple Silicon / Intel) from [GitHub Releases](https://github.com/its-banana-coder/noida/releases), then:
+>
+> ```bash
+> tar xzf noida-*.tar.gz && sudo mv noida /usr/local/bin/    # or any directory on your PATH
+> xattr -d com.apple.quarantine /usr/local/bin/noida         # macOS only, if Gatekeeper blocks it
+> ```
 
 **3. An agent** (NOIDA adds a tab for each one on your `PATH`, plus a shell)
 
@@ -248,9 +256,11 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**, not 
 - [x] Command palette, file tree operations, outline, tabs, themes, settings
 
 ### 🔨 v0.2 · Hardening *(next)*
-- [ ] CI on Linux and macOS
-- [ ] `v0.1.0-alpha` GitHub release with prebuilt binaries
-- [ ] Issue templates and a smoke-test checklist
+- [x] CI on Linux and macOS
+- [x] Release workflow with prebuilt binaries for Linux and macOS
+- [ ] `v0.1.0-alpha` GitHub release
+- [x] Issue templates
+- [ ] Smoke-test checklist
 - [ ] macOS verification, and testing with more terminals and language servers
 - [ ] Hands-on polish for features that so far only have unit tests (see [status](#-project-status))
 

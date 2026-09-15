@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in NOIDA is broken or behaves unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more detail you give, the faster it can be fixed.
+
+  - type: input
+    id: os-terminal
+    attributes:
+      label: OS and terminal
+      description: Operating system and terminal emulator, with versions. Mention tmux if you use it.
+      placeholder: Ubuntu 24.04 on WSL2, Windows Terminal 1.21, tmux 3.4
+    validations:
+      required: true
+
+  - type: input
+    id: agent
+    attributes:
+      label: Agent CLI and version
+      description: Output of `claude --version`, `codex --version`, or the custom agent you used.
+      placeholder: Claude Code 2.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: noida-version
+    attributes:
+      label: NOIDA version or commit
+      description: Release tag (e.g. `v0.1.0-alpha`) or the git commit you built from.
+      placeholder: v0.1.0-alpha / 67f3003
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `noida ~/code/project`
+        2. Ask Claude to ...
+        3. Click on ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead. Screenshots or error output are welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: unclickable-line
+    attributes:
+      label: Agent output line that should have been clickable
+      description: If a file or symbol reference wasn't clickable, paste the exact line of agent output here.
+      render: text
+    validations:
+      required: false
