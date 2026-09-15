@@ -31,7 +31,7 @@ pub struct Popup {
 
 impl App {
     fn doc_request(&mut self, kind: Request, params: Value) -> bool {
-        let Some(doc) = self.docs.get(self.active_doc) else { return false };
+        let Some(doc) = self.docs.get(self.active_doc()) else { return false };
         let path = doc.path.clone();
         let (line, col) = (doc.cursor_line0(), doc.utf16_col());
         let mut params = params;
@@ -42,7 +42,7 @@ impl App {
     }
 
     fn no_server(&mut self, what: &str) {
-        let has = self.docs.get(self.active_doc).and_then(|d| self.lsp.server_name(&d.path)).is_some();
+        let has = self.docs.get(self.active_doc()).and_then(|d| self.lsp.server_name(&d.path)).is_some();
         self.info(if has { format!("{what}: language server is still starting") } else { format!("{what} needs a language server for this file type") });
     }
 
@@ -57,7 +57,7 @@ impl App {
     }
 
     pub(super) fn prompt_rename_symbol(&mut self) {
-        let Some(word) = self.docs.get(self.active_doc).and_then(Doc::word_at_cursor) else { return self.info("no symbol at cursor") };
+        let Some(word) = self.docs.get(self.active_doc()).and_then(Doc::word_at_cursor) else { return self.info("no symbol at cursor") };
         self.mode = Mode::Prompt { kind: PromptKind::RenameSymbol, input: word };
     }
 
@@ -71,7 +71,7 @@ impl App {
     }
 
     fn selection_range(&self) -> Option<Value> {
-        let doc = self.docs.get(self.active_doc)?;
+        let doc = self.docs.get(self.active_doc())?;
         let (s, e) = doc.selected_lines();
         let line = doc.cursor_line0();
         if doc.has_selection() {
@@ -84,7 +84,7 @@ impl App {
     }
 
     pub(super) fn code_actions(&mut self, only: Option<&str>) {
-        let Some(doc) = self.docs.get(self.active_doc) else { return };
+        let Some(doc) = self.docs.get(self.active_doc()) else { return };
         let line = doc.cursor_line0();
         let diags: Vec<Value> = self.lsp.diagnostics.get(&doc.path).map(|ds| ds.iter().filter(|d| d.line <= line && line <= d.end_line).map(|d| d.raw.clone()).collect()).unwrap_or_default();
         let Some(range) = self.selection_range() else { return };
@@ -99,7 +99,7 @@ impl App {
     }
 
     pub(super) fn format(&mut self, selection: bool) {
-        let Some(doc) = self.docs.get(self.active_doc) else { return };
+        let Some(doc) = self.docs.get(self.active_doc()) else { return };
         let insert_spaces = !doc.line_text(0).is_some_and(|_| doc.uses_tabs());
         let mut params = json!({"options": {"tabSize": crate::settings::tab_width(), "insertSpaces": insert_spaces}});
         if selection {
@@ -155,7 +155,7 @@ impl App {
         // Either a Command itself or a CodeAction carrying one.
         let command = if action["command"].is_string() { Some(action.clone()) } else { action.get("command").filter(|c| c.is_object()).cloned() };
         if let Some(cmd) = command {
-            let path = self.docs.get(self.active_doc).map(|d| d.path.clone()).unwrap_or_default();
+            let path = self.docs.get(self.active_doc()).map(|d| d.path.clone()).unwrap_or_default();
             let params = json!({"command": cmd["command"], "arguments": cmd.get("arguments").cloned().unwrap_or(json!([]))});
             self.lsp.request_with(Request::ExecuteCommand, &path, params);
         }

@@ -9,7 +9,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use super::{App, Focus, Mode, PromptKind};
+use super::{App, Focus, Mode, PromptKind, groups};
 use crate::actions::{Action, Ask};
 use crate::editor::Doc;
 use crate::picker::{Item, Kind, Picker, Target};
@@ -31,18 +31,18 @@ impl App {
         if self.docs.iter().any(|d| d.path == path) {
             return self.open_path(path, None);
         }
-        let reusable = self.docs.iter().position(|d| d.preview && !d.dirty);
+        let reusable = (0..self.docs.len()).find(|&i| self.docs[i].preview && !self.docs[i].dirty && !self.shown_elsewhere(i));
         self.open_path(path, None);
         let Some(new_idx) = self.docs.iter().position(|d| d.path == path) else { return };
         self.docs[new_idx].preview = true;
         if let Some(old) = reusable.filter(|&o| o != new_idx) {
             self.drop_doc(old);
-            self.active_doc = self.docs.iter().position(|d| d.path == path).unwrap_or(0);
+            self.set_active_doc(self.docs.iter().position(|d| d.path == path).unwrap_or(0));
         }
     }
 
     pub(super) fn pin_active_preview(&mut self) {
-        if let Some(d) = self.docs.get_mut(self.active_doc) {
+        if let Some(d) = self.docs.get_mut(self.groups[self.active_group].active) {
             d.preview = false;
         }
     }
@@ -56,10 +56,7 @@ impl App {
         if self.closed.len() > 50 {
             self.closed.remove(0);
         }
-        if self.active_doc > i || self.active_doc >= self.docs.len() {
-            self.active_doc = self.active_doc.saturating_sub(1);
-        }
-        self.active_doc = self.active_doc.min(self.docs.len().saturating_sub(1));
+        groups::on_doc_removed(&mut self.groups, &mut self.active_group, i, self.docs.len());
     }
 
     /// Close docs matching `pick`, skipping pinned and (unless confirmed) dirty ones.
@@ -68,28 +65,29 @@ impl App {
         if !dirty.is_empty() && !self.confirmed(&format!("close-{what}")) {
             return self.error(format!("unsaved: {} — run again to discard", dirty.join(", ")));
         }
-        let active = self.docs.get(self.active_doc).map(|d| d.path.clone());
+        let active = self.docs.get(self.active_doc()).map(|d| d.path.clone());
         let targets: Vec<usize> = self.docs.iter().enumerate().filter(|(i, d)| pick(*i, d) && !d.pinned).map(|(i, _)| i).collect();
         for i in targets.into_iter().rev() {
             self.drop_doc(i);
         }
         if let Some(p) = active {
             if let Some(i) = self.docs.iter().position(|d| d.path == p) {
-                self.active_doc = i;
+                self.set_active_doc(i);
             }
         }
         self.refresh_marks();
     }
 
     pub(super) fn toggle_pin(&mut self) {
-        let Some(doc) = self.docs.get_mut(self.active_doc) else { return };
+        let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) else { return };
         doc.pinned = !doc.pinned;
         doc.preview = false;
         let pinned = doc.pinned;
-        let d = self.docs.remove(self.active_doc);
+        let from = self.active_doc();
+        let d = self.docs.remove(from);
         let at = self.docs.iter().take_while(|d| d.pinned).count();
         self.docs.insert(at, d);
-        self.active_doc = at;
+        groups::on_doc_moved(&mut self.groups, from, at);
         self.info(if pinned { "pinned tab" } else { "unpinned tab" });
     }
 
@@ -134,7 +132,7 @@ impl App {
     }
 
     pub(super) fn touch_mru(&mut self) {
-        let Some(p) = self.docs.get(self.active_doc).map(|d| d.path.clone()) else { return };
+        let Some(p) = self.docs.get(self.active_doc()).map(|d| d.path.clone()) else { return };
         if self.mru.last() != Some(&p) {
             self.mru.retain(|x| x != &p);
             self.mru.push(p);
@@ -166,7 +164,7 @@ impl App {
     fn subject_path(&self) -> Option<PathBuf> {
         match self.focus {
             Focus::Tree => self.tree.selected_path().map(Path::to_path_buf),
-            _ => self.docs.get(self.active_doc).map(|d| d.path.clone()),
+            _ => self.docs.get(self.active_doc()).map(|d| d.path.clone()),
         }
     }
 
@@ -174,7 +172,7 @@ impl App {
         let dir = if self.focus == Focus::Tree {
             self.tree.target_dir()
         } else {
-            self.docs.get(self.active_doc).and_then(|d| d.path.parent().map(Path::to_path_buf)).unwrap_or_else(|| self.root.clone())
+            self.docs.get(self.active_doc()).and_then(|d| d.path.parent().map(Path::to_path_buf)).unwrap_or_else(|| self.root.clone())
         };
         let rel = refs::relative(&self.root, &dir).into_owned();
         let input = if rel.is_empty() || dir == self.root { String::new() } else { format!("{rel}/") };
@@ -304,7 +302,7 @@ impl App {
     /// Keep the context file that `noida hook` hands to Claude on each prompt current.
     pub(super) fn write_shared_context(&mut self) {
         let Some(server) = &self.hook_server else { return };
-        let text = match self.docs.get(self.active_doc).filter(|_| self.settings.share_editor_context) {
+        let text = match self.docs.get(self.active_doc()).filter(|_| self.settings.share_editor_context) {
             Some(doc) => {
                 let rel = refs::relative(&self.root, &doc.path).into_owned();
                 let (s, e) = doc.selected_lines();
@@ -336,7 +334,7 @@ impl App {
     }
 
     pub(super) fn send_symbol(&mut self) {
-        let Some(doc) = self.docs.get_mut(self.active_doc) else { return self.info("open a file first") };
+        let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) else { return self.info("open a file first") };
         let line = doc.cursor_line0();
         let Some(sym) = doc.scopes_at(line).pop() else { return self.info("no symbol at cursor") };
         let rel = refs::relative(&self.root, &doc.path).into_owned();
@@ -359,7 +357,7 @@ impl App {
     // ---- outline panel ----
 
     pub(super) fn outline_symbols(&mut self) -> Vec<(usize, Symbol)> {
-        let Some(doc) = self.docs.get_mut(self.active_doc) else { return Vec::new() };
+        let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) else { return Vec::new() };
         let symbols = doc.outline().to_vec();
         let mut out = Vec::new();
         let mut stack: Vec<usize> = Vec::new();
@@ -381,7 +379,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.outline_selected = (self.outline_selected + 1).min(n.saturating_sub(1)),
             KeyCode::Enter => {
                 if let Some((_, s)) = self.outline_symbols().get(self.outline_selected).cloned() {
-                    if let Some(doc) = self.docs.get_mut(self.active_doc) {
+                    if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                         doc.goto(s.line + 1, Some(s.col + 1), None);
                     }
                     self.focus = Focus::Editor;
@@ -397,7 +395,7 @@ impl App {
         let i = self.outline_scroll + y.saturating_sub(area.y) as usize;
         if let Some((_, s)) = self.outline_symbols().get(i).cloned() {
             self.outline_selected = i;
-            if let Some(doc) = self.docs.get_mut(self.active_doc) {
+            if let Some(doc) = self.docs.get_mut(self.groups[self.active_group].active) {
                 doc.goto(s.line + 1, Some(s.col + 1), None);
             }
         }
@@ -405,7 +403,7 @@ impl App {
 
     pub(super) fn render_outline(&mut self, area: Rect, buf: &mut Buffer, focused: bool) {
         let items = self.outline_symbols();
-        let cursor_line = self.docs.get(self.active_doc).map(|d| d.cursor_line0());
+        let cursor_line = self.docs.get(self.active_doc()).map(|d| d.cursor_line0());
         if items.is_empty() {
             let msg = if self.docs.is_empty() { "no file open" } else { "no symbols (supported: Rust, TS/JS, Python, Go, Java)" };
             buf.set_stringn(area.x + 1, area.y, msg, area.width as usize, Style::default().fg(theme::DIM()));

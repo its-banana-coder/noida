@@ -138,6 +138,7 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 - Auto-closing brackets and tags, comments, move/copy/delete line
 - **Markdown preview**: `.md` files open rendered (headings, lists, tables, code, callouts); `Alt+m` switches to editing
 - Folding, word wrap, sticky scroll, breadcrumbs
+- **Split editor** (`Ctrl+\`): two editor groups side by side, restored on the next launch
 - Preview and pinned tabs, reopen closed tab, recent files
 
 </td>
@@ -218,6 +219,7 @@ Also on a Mac:
 | `Tab` / `Shift+Tab` | Indent / dedent |
 | `Ctrl+W` · middle-click | Close tab |
 | `Ctrl+PgUp` / `Ctrl+PgDn` | Previous / next tab |
+| `Ctrl+\` | Split the editor into two groups (palette: *Focus Other Editor Group*, *Move Tab to Other Editor Group*, *Close Editor Group*; click a group to focus it) |
 
 </details>
 
@@ -255,7 +257,7 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**, not 
 - [ ] Hands-on polish for features that so far only have unit tests (see [status](#-project-status))
 
 ### 🧩 v0.3 · Editor completeness
-- [ ] Split editor (two editor groups, `Ctrl+\`)
+- [x] Split editor (two editor groups, `Ctrl+\`)
 - [ ] Custom keybindings in `settings.json`
 - [ ] Kitty keyboard protocol, which enables `Ctrl+Shift+P/F/O/H/K/T` in terminals that support it
 - [ ] Search and mouse copy inside agent/terminal panes
