@@ -50,7 +50,7 @@ flowchart LR
 
 ## 🚀 Install
 
-**Fastest: download a binary** from the [v0.1.0-alpha release](https://github.com/its-banana-coder/noida/releases/tag/v0.1.0-alpha): Linux x86_64 (`gnu` for Ubuntu 22.04+ or the fully static `musl` build for any distro) and macOS (Apple Silicon or Intel).
+**Fastest: download a binary** from the [latest release](https://github.com/its-banana-coder/noida/releases): Linux x86_64 (`gnu` for Ubuntu 22.04+ or the fully static `musl` build for any distro) and macOS (Apple Silicon or Intel).
 
 ```bash
 tar xzf noida-*.tar.gz && sudo mv noida /usr/local/bin/    # or any directory on your PATH
@@ -290,7 +290,7 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**: a li
 - [x] **Editor completeness:** split editor, custom keybindings, kitty keyboard protocol, Markdown preview, find and copy in agent panes, git staged view, log and file history
 - [x] **Deeper agent integration:** editor context sharing, changed files per agent with review tracking, compare two agents, send one prompt to two agents, implement → review → fix handoffs
 - [x] **Sessions like VS Code:** new session button, conversation-named tabs, rename, browsing past conversations
-- [x] **Hardening:** CI on Linux and macOS, [v0.1.0-alpha release](https://github.com/its-banana-coder/noida/releases/tag/v0.1.0-alpha) with prebuilt binaries, issue templates, [smoke-test checklist](TESTING.md), [website](https://its-banana-coder.github.io/noida/)
+- [x] **Hardening:** CI on Linux and macOS, [latest release](https://github.com/its-banana-coder/noida/releases) with prebuilt binaries, issue templates, [smoke-test checklist](TESTING.md), [website](https://its-banana-coder.github.io/noida/)
 - [x] **Language servers verified:** rust-analyzer, TypeScript 7 (built-in server), Pyright
 
 ### 🔨 Next
