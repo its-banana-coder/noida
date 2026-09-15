@@ -50,6 +50,15 @@ flowchart LR
 
 ## 🚀 Install
 
+**Fastest: download a binary** from the [v0.1.0-alpha release](https://github.com/its-banana-coder/noida/releases/tag/v0.1.0-alpha): Linux x86_64 (`gnu` for Ubuntu 22.04+ or the fully static `musl` build for any distro) and macOS (Apple Silicon or Intel).
+
+```bash
+tar xzf noida-*.tar.gz && sudo mv noida /usr/local/bin/    # or any directory on your PATH
+xattr -d com.apple.quarantine /usr/local/bin/noida         # macOS only, if Gatekeeper blocks it
+```
+
+**Or build from source:**
+
 **1. Rust 1.88+ and a C linker**
 
 ```bash
@@ -62,13 +71,6 @@ sudo apt install build-essential        # Debian/Ubuntu/WSL · macOS: xcode-sele
 ```bash
 cargo install --git https://github.com/its-banana-coder/noida
 ```
-
-> **Prebuilt binaries** (from the first tagged release on): skip steps 1–2 by downloading `noida-<target>.tar.gz` for Linux x86_64 or macOS (Apple Silicon / Intel) from [GitHub Releases](https://github.com/its-banana-coder/noida/releases), then:
->
-> ```bash
-> tar xzf noida-*.tar.gz && sudo mv noida /usr/local/bin/    # or any directory on your PATH
-> xattr -d com.apple.quarantine /usr/local/bin/noida         # macOS only, if Gatekeeper blocks it
-> ```
 
 **3. An agent** (NOIDA adds a tab for each one on your `PATH`, plus a shell)
 
@@ -288,12 +290,13 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**: a li
 - [x] **Editor completeness:** split editor, custom keybindings, kitty keyboard protocol, Markdown preview, find and copy in agent panes, git staged view, log and file history
 - [x] **Deeper agent integration:** editor context sharing, changed files per agent with review tracking, compare two agents, send one prompt to two agents, implement → review → fix handoffs
 - [x] **Sessions like VS Code:** new session button, conversation-named tabs, rename, browsing past conversations
-- [x] **Hardening:** CI on Linux and macOS, release workflow, issue templates, [website](https://its-banana-coder.github.io/noida/)
+- [x] **Hardening:** CI on Linux and macOS, [v0.1.0-alpha release](https://github.com/its-banana-coder/noida/releases/tag/v0.1.0-alpha) with prebuilt binaries, issue templates, [smoke-test checklist](TESTING.md), [website](https://its-banana-coder.github.io/noida/)
+- [x] **Language servers verified:** rust-analyzer, TypeScript 7 (built-in server), Pyright
 
 ### 🔨 Next
-- [ ] First `v0.1.0-alpha` release with prebuilt Linux and macOS binaries
-- [ ] Hands-on macOS testing (iTerm2, Ghostty, Terminal.app) and more language servers
-- [ ] Smoke-test checklist, and hands-on polish for features that so far only have unit tests (see [status](#-project-status))
+- [ ] Hands-on macOS testing (iTerm2, Ghostty, Terminal.app); help wanted, see [TESTING.md](TESTING.md)
+- [ ] Polish from early feedback
+- [ ] Verify gopls and pylsp
 
 ### 🔭 Later
 - [ ] Remote development over SSH
@@ -311,9 +314,9 @@ Extension marketplace · built-in AI chat or model · accounts and cloud sync ·
 
 | | |
 |---|---|
-| ✅ **Tested live** (Linux/WSL2, tmux and Windows Terminal, Claude Code 2.1, Codex CLI, rust-analyzer) | Reference clicking and jumps · agent tabs, split, hook status, activity, sessions/resume, new-session button, rename, history browser, workspace restore · hunk review, staged view, log and file history · worktree agents · LSP with rust-analyzer, TypeScript 7 and Pyright (diagnostics, hover, definition, references, format, code actions) · editing, multi-cursor, find widget, split editor, Markdown preview · find and copy in agent panes · custom keybindings · changed files per agent |
+| ✅ **Tested live** (Linux/WSL2, tmux and Windows Terminal, Claude Code 2.1, Codex CLI, rust-analyzer) | Reference clicking and jumps · agent tabs, split, hook status, activity, sessions/resume, new-session button, rename, history browser, workspace restore · hunk review, staged view, log and file history · worktree agents · LSP with rust-analyzer, TypeScript 7 and Pyright (diagnostics, hover, definition, references, format, code actions) · editing, multi-cursor, find widget, split editor, Markdown preview · find and copy in agent panes · custom keybindings · changed files per agent · workspace search/replace · tab and file tree actions · folding, word wrap · code actions, formatting · light theme |
 | 🍎 **macOS** | Builds and all tests pass in CI on every commit; little hands-on use yet |
-| 🧪 **Unit-tested, little hands-on use** | `Ctrl+Shift` shortcuts (kitty protocol) · compare agents, send prompt to two agents, fix-findings handoff · editor context sharing · workspace search/replace · tab and file tree actions · folding, wrap, sticky scroll · code actions, formatting · light theme |
+| 🧪 **Unit-tested, little hands-on use** | `Ctrl+Shift` shortcuts (kitty protocol) · compare agents, send prompt to two agents, fix-findings handoff · editor context sharing · sticky scroll |
 | ❔ **Not tested yet** | Native Windows (not supported) · very large repos · gopls and pylsp |
 
 **Good to know**
@@ -359,6 +362,8 @@ Bug reports make NOIDA better. [Open an issue](https://github.com/its-banana-cod
 cargo run -- .     # run from source
 cargo test         # unit tests
 ```
+
+Before a release, run the [smoke-test checklist](TESTING.md) in a real terminal.
 
 <details>
 <summary><b>Code layout</b></summary>

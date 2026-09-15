@@ -949,6 +949,14 @@ impl App {
         if !matches!(self.mode, Mode::Normal) {
             return self.on_mode_key(key);
         }
+        // The search view's option toggles (Alt+c/w/r) and replace-all (Alt+a) win over globals.
+        if self.focus == Focus::Editor
+            && matches!(self.view, Some(View::Search(_)))
+            && key.modifiers == KeyModifiers::ALT
+            && matches!(key.code, KeyCode::Char('c' | 'w' | 'r' | 'a'))
+        {
+            return self.view_key(key);
+        }
         match global_binding(&self.keymap, key) {
             Some(Some(action)) => return self.run(action),
             Some(None) => return self.focus_key(key),
