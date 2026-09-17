@@ -97,15 +97,18 @@ jobs:
       - name: Package
         run: |
           set -euo pipefail
-          cargo deb --no-build --output dist/
-          cargo generate-rpm --output dist/
-          ls -l dist/
-          cd dist && sha256sum *.deb *.rpm > checksums-packages.txt
+          mkdir -p dist
+          # Stable file names, so install instructions don't change per release.
+          cargo deb --no-build --output dist/noida_amd64.deb
+          cargo generate-rpm --output dist/noida.x86_64.rpm
+          cd dist
+          for f in noida_amd64.deb noida.x86_64.rpm; do sha256sum "$f" > "$f.sha256"; done
+          ls -l
 
       - name: Check the package installs and runs
         run: |
           set -euo pipefail
-          sudo apt-get install -y ./dist/*.deb
+          sudo apt-get install -y ./dist/noida_amd64.deb
           noida --version
           sudo apt-get remove -y noida
 

@@ -59,14 +59,14 @@ brew install its-banana-coder/noida/noida
 **Debian / Ubuntu / WSL**
 
 ```bash
-curl -LO https://github.com/its-banana-coder/noida/releases/latest/download/noida_amd64.deb
+curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.2-alpha/noida_amd64.deb
 sudo apt install ./noida_amd64.deb
 ```
 
 **Fedora / RHEL / openSUSE**
 
 ```bash
-curl -LO https://github.com/its-banana-coder/noida/releases/latest/download/noida.x86_64.rpm
+curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.2-alpha/noida.x86_64.rpm
 sudo dnf install ./noida.x86_64.rpm      # or: sudo rpm -i noida.x86_64.rpm
 ```
 
