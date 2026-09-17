@@ -397,16 +397,19 @@
       <div>
         <h2 id="install-h">Install in a minute.</h2>
         <p class="muted">Download a binary for Linux or macOS from the <a href="https://github.com/its-banana-coder/noida/releases">latest release</a>, or build from source with Rust 1.88 or newer. NOIDA adds a tab for each agent CLI it finds on your <code>PATH</code>.</p>
-        <p class="muted">Binaries: Linux x86_64 (a static build for any distro, and one for Ubuntu 22.04+) and macOS for Apple Silicon and Intel, each with a checksum. They're built in the open on GitHub Actions; the Intel Mac build hasn't been run by anyone yet. macOS binaries are a plain <code>.tar.gz</code>, not a <code>.dmg</code>, and aren't signed by Apple yet, so the first run may be blocked: <code>xattr -d com.apple.quarantine noida</code> clears it.</p>
+        <p class="muted">Also available: static and glibc Linux binaries, macOS tarballs for Apple Silicon and Intel, and <code>cargo install --git https://github.com/its-banana-coder/noida</code> to build from source. Every download has a checksum, and all of them are built in the open on GitHub Actions. On Windows, run NOIDA inside WSL and install the <code>.deb</code>.</p>
         <p class="muted">On a Mac, set your terminal's Option key to act as Alt, or press <kbd>Ctrl+]</kbd> before any shortcut. The <a href="https://github.com/its-banana-coder/noida#-macos-option-as-alt">README has the setting for each terminal</a>.</p>
       </div>
       <div class="cmd" id="cmd">
-<button class="copy" id="copy" type="button">Copy</button><span class="c"># download a binary (Linux, any distro)</span>
-<span class="p">$ </span>curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.1-alpha/noida-x86_64-unknown-linux-musl.tar.gz
-<span class="p">$ </span>tar xzf noida-*.tar.gz &amp;&amp; sudo mv noida /usr/local/bin/
+<button class="copy" id="copy" type="button">Copy</button><span class="c"># macOS</span>
+<span class="p">$ </span>brew install its-banana-coder/noida/noida
 
-<span class="c"># or build from source</span>
-<span class="p">$ </span>cargo install --git https://github.com/its-banana-coder/noida
+<span class="c"># Debian · Ubuntu · WSL</span>
+<span class="p">$ </span>curl -LO https://github.com/its-banana-coder/noida/releases/latest/download/noida_amd64.deb
+<span class="p">$ </span>sudo apt install ./noida_amd64.deb
+
+<span class="c"># Fedora · RHEL</span>
+<span class="p">$ </span>sudo dnf install ./noida.x86_64.rpm
 
 <span class="c"># open a project</span>
 <span class="p">$ </span>noida ~/code/my-app</div>
@@ -446,13 +449,13 @@
           <li>CI on Linux and macOS</li>
           <li>Verified with rust-analyzer, TypeScript 7 and Pyright</li>
           <li>Smoke-test checklist for every release</li>
+          <li>Homebrew tap, .deb and .rpm packages</li>
         </ul>
       </li>
       <li class="next">
         <h3>Next</h3>
         <ul>
           <li>Hands-on testing in Mac terminals</li>
-          <li>Homebrew tap</li>
           <li>Signed and notarized macOS binaries</li>
           <li>Polish from early feedback</li>
         </ul>
@@ -612,7 +615,7 @@
 
   $("copy").addEventListener("click", async () => {
     try {
-      await navigator.clipboard.writeText("curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.1-alpha/noida-x86_64-unknown-linux-musl.tar.gz && tar xzf noida-x86_64-unknown-linux-musl.tar.gz && sudo mv noida /usr/local/bin/");
+      await navigator.clipboard.writeText("brew install its-banana-coder/noida/noida");
       $("copy").textContent = "Copied";
     } catch {
       $("copy").textContent = "Select and copy";

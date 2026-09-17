@@ -78,9 +78,46 @@ jobs:
             noida-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
 
+  packages:
+    name: Linux packages (deb, rpm)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: packages
+
+      - name: Install packaging tools
+        run: cargo install cargo-deb cargo-generate-rpm --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          cargo deb --no-build --output dist/
+          cargo generate-rpm --output dist/
+          ls -l dist/
+          cd dist && sha256sum *.deb *.rpm > checksums-packages.txt
+
+      - name: Check the package installs and runs
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y ./dist/*.deb
+          noida --version
+          sudo apt-get remove -y noida
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: noida-linux-packages
+          path: dist/*
+          if-no-files-found: error
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, packages]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:

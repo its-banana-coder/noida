@@ -50,44 +50,57 @@ flowchart LR
 
 ## 🚀 Install
 
-**Fastest: download a binary** from the [latest release](https://github.com/its-banana-coder/noida/releases): Linux x86_64 (`gnu` for Ubuntu 22.04+ or the fully static `musl` build for any distro) and macOS (Apple Silicon or Intel).
+**macOS (Homebrew)**
+
+```bash
+brew install its-banana-coder/noida/noida
+```
+
+**Debian / Ubuntu / WSL**
+
+```bash
+curl -LO https://github.com/its-banana-coder/noida/releases/latest/download/noida_amd64.deb
+sudo apt install ./noida_amd64.deb
+```
+
+**Fedora / RHEL / openSUSE**
+
+```bash
+curl -LO https://github.com/its-banana-coder/noida/releases/latest/download/noida.x86_64.rpm
+sudo dnf install ./noida.x86_64.rpm      # or: sudo rpm -i noida.x86_64.rpm
+```
+
+**Any Linux, or macOS without Homebrew** — download a binary from the [latest release](https://github.com/its-banana-coder/noida/releases):
 
 ```bash
 tar xzf noida-*.tar.gz && sudo mv noida /usr/local/bin/    # or any directory on your PATH
 xattr -d com.apple.quarantine /usr/local/bin/noida         # macOS only, if Gatekeeper blocks it
 ```
 
-| Download | For | Checked |
-|---|---|---|
-| `noida-x86_64-unknown-linux-musl.tar.gz` | Any Linux x86_64 (static binary) | ✅ runs on Ubuntu 22.04 |
-| `noida-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64 with glibc 2.35+ (Ubuntu 22.04+) | ✅ runs on Ubuntu 22.04 |
-| `noida-aarch64-apple-darwin.tar.gz` | macOS on Apple Silicon (M1 and later) | ✅ starts on GitHub's macOS runner; little hands-on use |
-| `noida-x86_64-apple-darwin.tar.gz` | macOS on Intel | ⚠️ builds, but nobody has run it yet |
-
-Each file has a `.sha256` checksum next to it (`shasum -a 256 -c noida-*.sha256`).
-
-> **About the macOS binaries.** NOIDA is a single command-line program, so it ships as a `.tar.gz`, not a `.dmg` (disk images are for apps you drag into Applications). The binaries are **not signed or notarized by Apple** yet, so macOS may say *"cannot be opened because the developer cannot be verified"*: the `xattr` command above clears that, or build from source. A Homebrew tap is planned.
-
-**Or build from source:**
-
-**1. Rust 1.88+ and a C linker**
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && source ~/.cargo/env
-sudo apt install build-essential        # Debian/Ubuntu/WSL · macOS: xcode-select --install
-```
-
-**2. NOIDA**
+**From source** (Rust 1.88+ and a C linker: `build-essential` on Debian/Ubuntu, `xcode-select --install` on macOS):
 
 ```bash
 cargo install --git https://github.com/its-banana-coder/noida
 ```
 
-**3. An agent** (NOIDA adds a tab for each one on your `PATH`, plus a shell)
+**Windows:** run NOIDA inside [WSL](https://learn.microsoft.com/windows/wsl/install) and install the `.deb` above. A native Windows build isn't supported yet, because NOIDA's agent integration uses Unix sockets.
 
-[Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`) · [Codex CLI](https://github.com/openai/codex) (`codex`)
+| Download | For | Checked |
+|---|---|---|
+| `brew install …` / `noida-aarch64-apple-darwin.tar.gz` | macOS on Apple Silicon | ✅ installed and run on a macOS runner every week |
+| `noida-x86_64-apple-darwin.tar.gz` | macOS on Intel | ⚠️ builds, but nobody has run it yet |
+| `noida_amd64.deb` | Debian, Ubuntu, WSL (x86_64) | ✅ installed and run in CI |
+| `noida.x86_64.rpm` | Fedora, RHEL, openSUSE (x86_64) | ⚠️ built in CI, not installed yet |
+| `noida-x86_64-unknown-linux-musl.tar.gz` | Any Linux x86_64 (static) | ✅ runs on Ubuntu 22.04 |
+| `noida-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64, glibc 2.35+ | ✅ runs on Ubuntu 22.04 |
 
-**4. Run it**
+Every download has a `.sha256` checksum beside it (`shasum -a 256 -c noida-*.sha256`).
+
+> **About the macOS binaries.** NOIDA is a command-line program, so it ships as a `.tar.gz`, not a `.dmg` (disk images are for apps you drag into Applications). Downloaded binaries aren't signed by Apple yet, so macOS may say *"cannot be opened because the developer cannot be verified"*: the `xattr` command above clears that. **Homebrew avoids the warning**, so it's the easiest route on a Mac.
+
+**An agent** (NOIDA adds a tab for each one on your `PATH`, plus a shell): [Claude Code](https://docs.claude.com/en/docs/claude-code) (`claude`) · [Codex CLI](https://github.com/openai/codex) (`codex`)
+
+**Run it**
 
 ```bash
 noida                       # current directory
@@ -303,10 +316,10 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**: a li
 - [x] **Sessions like VS Code:** new session button, conversation-named tabs, rename, browsing past conversations
 - [x] **Hardening:** CI on Linux and macOS, [latest release](https://github.com/its-banana-coder/noida/releases) with prebuilt binaries, issue templates, [smoke-test checklist](TESTING.md), [website](https://its-banana-coder.github.io/noida/)
 - [x] **Language servers verified:** rust-analyzer, TypeScript 7 (built-in server), Pyright
+- [x] **Easy install:** Homebrew tap for macOS, `.deb` and `.rpm` packages, static Linux binary
 
 ### 🔨 Next
 - [ ] Hands-on macOS testing (iTerm2, Ghostty, Terminal.app), including the Intel binary; help wanted, see [TESTING.md](TESTING.md)
-- [ ] Homebrew tap (`brew install`), which also avoids the Gatekeeper warning
 - [ ] Signed and notarized macOS binaries
 - [ ] Polish from early feedback
 - [ ] Verify gopls and pylsp
@@ -383,9 +396,10 @@ Before a release, run the [smoke-test checklist](TESTING.md) in a real terminal.
 
 - Every push runs CI on GitHub Actions: build and all tests on Ubuntu and macOS, plus a build with the minimum Rust version (1.88).
 - Pushing a `v*` tag runs the [release workflow](.github/workflows/release.yml) on GitHub-hosted machines:
-  - **Linux** builds on Ubuntu 22.04 (so the glibc build runs on 22.04 and newer) plus a fully static musl build.
+  - **Linux** builds on Ubuntu 22.04 (so the glibc build runs on 22.04 and newer) plus a fully static musl build, and `.deb`/`.rpm` packages (the `.deb` is installed and run in CI).
   - **macOS** builds on an Apple Silicon runner. The Intel binary is cross-compiled there, because GitHub no longer offers Intel Mac runners.
   - Each binary is started with `--version` where the runner can execute it, then packaged with a checksum and attached to a GitHub Release. Tags with `-alpha` or `-beta` are marked as prereleases.
+- **Homebrew:** `scripts/update-homebrew.sh <tag>` regenerates the formula in [its-banana-coder/homebrew-noida](https://github.com/its-banana-coder/homebrew-noida) from the release checksums; that tap installs and runs NOIDA on a macOS runner weekly.
 - Nothing is built on a developer's machine, and no binary is signed yet.
 - **Cost:** CI, releases and the website run on GitHub Actions, Releases and Pages, which are free for public repositories. Signing and notarizing macOS binaries would need an Apple Developer account ($99/year), which the project doesn't have yet.
 

@@ -10,6 +10,33 @@ readme = "README.md"
 keywords = ["tui", "editor", "ide", "claude", "terminal"]
 categories = ["command-line-utilities", "text-editors"]
 
+# Debian package (cargo-deb)
+[package.metadata.deb]
+maintainer = "its-banana-coder <noreply@github.com>"
+copyright = "2026, NOIDA contributors"
+extended-description = """
+NOIDA runs Claude Code, Codex or a shell in a real terminal pane next to a
+file tree, editor, git review and language-server features. Every file:line
+an agent prints is clickable.
+"""
+section = "devel"
+priority = "optional"
+assets = [
+    ["target/release/noida", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/noida/README.md", "644"],
+    ["LICENSE", "usr/share/doc/noida/LICENSE", "644"],
+]
+
+# RPM package (cargo-generate-rpm)
+[package.metadata.generate-rpm]
+license = "MIT"
+summary = "Terminal IDE built around Claude Code and Codex"
+assets = [
+    { source = "target/release/noida", dest = "/usr/bin/noida", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/noida/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/doc/noida/LICENSE", mode = "644", doc = true },
+]
+
 [dependencies]
 anyhow = "1.0.104"
 ignore = "0.4.33"
