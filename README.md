@@ -54,15 +54,20 @@ flowchart LR
 **macOS (Homebrew)**
 
 ```bash
-brew install its-banana-coder/noida/noida
+brew tap its-banana-coder/noida
+brew install noida
 ```
 
-**Debian / Ubuntu / WSL**
+**Debian / Ubuntu / WSL (apt repository, with upgrades)** — add it once:
 
 ```bash
-curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.2-alpha/noida_amd64.deb
-sudo apt install ./noida_amd64.deb
+sudo install -d /etc/apt/keyrings
+curl -fsSL https://its-banana-coder.github.io/noida/apt/key.gpg | sudo tee /etc/apt/keyrings/noida.gpg >/dev/null
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/noida.gpg] https://its-banana-coder.github.io/noida/apt stable main" | sudo tee /etc/apt/sources.list.d/noida.list >/dev/null
+sudo apt update && sudo apt install noida
 ```
+
+After that, `sudo apt upgrade` keeps NOIDA current. To install a single `.deb` instead: `curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.2-alpha/noida_amd64.deb && sudo apt install ./noida_amd64.deb`
 
 **Fedora / RHEL / openSUSE**
 
@@ -91,7 +96,7 @@ cargo install --git https://github.com/its-banana-coder/noida   # or the latest 
 |---|---|---|
 | `brew install …` / `noida-aarch64-apple-darwin.tar.gz` | macOS on Apple Silicon | ✅ installed and run on a macOS runner every week |
 | `noida-x86_64-apple-darwin.tar.gz` | macOS on Intel | ⚠️ builds, but nobody has run it yet |
-| `noida_amd64.deb` | Debian, Ubuntu, WSL (x86_64) | ✅ installed and run in CI |
+| apt repository / `noida_amd64.deb` | Debian, Ubuntu, WSL (x86_64) | ✅ installed and run in CI |
 | `noida.x86_64.rpm` | Fedora, RHEL, openSUSE (x86_64) | ⚠️ built in CI, not installed yet |
 | `noida-x86_64-unknown-linux-musl.tar.gz` | Any Linux x86_64 (static) | ✅ runs on Ubuntu 22.04 |
 | `noida-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64, glibc 2.35+ | ✅ runs on Ubuntu 22.04 |
@@ -402,6 +407,7 @@ Before a release, run the [smoke-test checklist](TESTING.md) in a real terminal.
   - **Linux** builds on Ubuntu 22.04 (so the glibc build runs on 22.04 and newer) plus a fully static musl build, and `.deb`/`.rpm` packages (the `.deb` is installed and run in CI).
   - **macOS** builds on an Apple Silicon runner. The Intel binary is cross-compiled there, because GitHub no longer offers Intel Mac runners.
   - Each binary is started with `--version` where the runner can execute it, then packaged with a checksum and attached to a GitHub Release. Tags with `-alpha` or `-beta` are marked as prereleases.
+- **apt repository:** `scripts/publish-repos.sh` rebuilds the pool and signed metadata from every release and pushes the site plus repository to the `gh-pages` branch, which GitHub Pages serves. The signing key stays on the maintainer's machine; only the public key is published.
 - **Homebrew:** `scripts/update-homebrew.sh <tag>` regenerates the formula in [its-banana-coder/homebrew-noida](https://github.com/its-banana-coder/homebrew-noida) from the release checksums; that tap installs and runs NOIDA on a macOS runner weekly.
 - Nothing is built on a developer's machine, and no binary is signed yet.
 - **Cost:** CI, releases and the website run on GitHub Actions, Releases and Pages, which are free for public repositories. Signing and notarizing macOS binaries would need an Apple Developer account ($99/year), which the project doesn't have yet.

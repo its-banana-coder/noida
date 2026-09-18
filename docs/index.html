@@ -402,11 +402,12 @@
       </div>
       <div class="cmd" id="cmd">
 <button class="copy" id="copy" type="button">Copy</button><span class="c"># macOS</span>
-<span class="p">$ </span>brew install its-banana-coder/noida/noida
+<span class="p">$ </span>brew tap its-banana-coder/noida &amp;&amp; brew install noida
 
 <span class="c"># Debian · Ubuntu · WSL</span>
-<span class="p">$ </span>curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.2-alpha/noida_amd64.deb
-<span class="p">$ </span>sudo apt install ./noida_amd64.deb
+<span class="p">$ </span>curl -fsSL https://its-banana-coder.github.io/noida/apt/key.gpg | sudo tee /etc/apt/keyrings/noida.gpg &gt;/dev/null
+<span class="p">$ </span>echo "deb [signed-by=/etc/apt/keyrings/noida.gpg] https://its-banana-coder.github.io/noida/apt stable main" | sudo tee /etc/apt/sources.list.d/noida.list
+<span class="p">$ </span>sudo apt update &amp;&amp; sudo apt install noida
 
 <span class="c"># Fedora · RHEL</span>
 <span class="p">$ </span>sudo dnf install ./noida.x86_64.rpm
@@ -618,7 +619,7 @@
 
   $("copy").addEventListener("click", async () => {
     try {
-      await navigator.clipboard.writeText("brew install its-banana-coder/noida/noida");
+      await navigator.clipboard.writeText("brew tap its-banana-coder/noida && brew install noida");
       $("copy").textContent = "Copied";
     } catch {
       $("copy").textContent = "Select and copy";
