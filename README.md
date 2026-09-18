@@ -8,6 +8,7 @@
 
 [![CI](https://github.com/its-banana-coder/noida/actions/workflows/ci.yml/badge.svg)](https://github.com/its-banana-coder/noida/actions/workflows/ci.yml)
 [![Status: alpha](https://img.shields.io/badge/status-early%20preview-orange)](#-project-status)
+[![crates.io](https://img.shields.io/crates/v/noida?logo=rust&color=b7410e)](https://crates.io/crates/noida)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-b7410e?logo=rust)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20WSL2-555)](#-project-status)
@@ -77,10 +78,11 @@ tar xzf noida-*.tar.gz && sudo mv noida /usr/local/bin/    # or any directory on
 xattr -d com.apple.quarantine /usr/local/bin/noida         # macOS only, if Gatekeeper blocks it
 ```
 
-**From source** (Rust 1.88+ and a C linker: `build-essential` on Debian/Ubuntu, `xcode-select --install` on macOS):
+**With Rust** (1.88+ and a C linker: `build-essential` on Debian/Ubuntu, `xcode-select --install` on macOS):
 
 ```bash
-cargo install --git https://github.com/its-banana-coder/noida
+cargo install noida                                        # from crates.io
+cargo install --git https://github.com/its-banana-coder/noida   # or the latest commit
 ```
 
 **Windows:** run NOIDA inside [WSL](https://learn.microsoft.com/windows/wsl/install) and install the `.deb` above. A native Windows build isn't supported yet, because NOIDA's agent integration uses Unix sockets.
@@ -93,6 +95,7 @@ cargo install --git https://github.com/its-banana-coder/noida
 | `noida.x86_64.rpm` | Fedora, RHEL, openSUSE (x86_64) | ⚠️ built in CI, not installed yet |
 | `noida-x86_64-unknown-linux-musl.tar.gz` | Any Linux x86_64 (static) | ✅ runs on Ubuntu 22.04 |
 | `noida-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64, glibc 2.35+ | ✅ runs on Ubuntu 22.04 |
+| `cargo install noida` | Any platform with Rust | ✅ installed from crates.io |
 
 Every download has a `.sha256` checksum beside it (`shasum -a 256 -c noida-*.sha256`).
 
@@ -316,7 +319,7 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**: a li
 - [x] **Sessions like VS Code:** new session button, conversation-named tabs, rename, browsing past conversations
 - [x] **Hardening:** CI on Linux and macOS, [latest release](https://github.com/its-banana-coder/noida/releases) with prebuilt binaries, issue templates, [smoke-test checklist](TESTING.md), [website](https://its-banana-coder.github.io/noida/)
 - [x] **Language servers verified:** rust-analyzer, TypeScript 7 (built-in server), Pyright
-- [x] **Easy install:** Homebrew tap for macOS, `.deb` and `.rpm` packages, static Linux binary
+- [x] **Easy install:** [crates.io](https://crates.io/crates/noida), Homebrew tap for macOS, `.deb` and `.rpm` packages, static Linux binary
 
 ### 🔨 Next
 - [ ] Hands-on macOS testing (iTerm2, Ghostty, Terminal.app), including the Intel binary; help wanted, see [TESTING.md](TESTING.md)

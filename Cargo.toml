@@ -9,6 +9,7 @@ repository = "https://github.com/its-banana-coder/noida"
 readme = "README.md"
 keywords = ["tui", "editor", "ide", "claude", "terminal"]
 categories = ["command-line-utilities", "text-editors"]
+exclude = ["docs/", ".github/", "scripts/", "TESTING.md"]
 
 # Debian package (cargo-deb)
 [package.metadata.deb]
