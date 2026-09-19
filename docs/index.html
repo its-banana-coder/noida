@@ -410,7 +410,8 @@
 <span class="p">$ </span>sudo apt update &amp;&amp; sudo apt install noida
 
 <span class="c"># Fedora · RHEL</span>
-<span class="p">$ </span>sudo dnf install ./noida.x86_64.rpm
+<span class="p">$ </span>sudo dnf config-manager --add-repo https://its-banana-coder.github.io/noida/rpm/noida.repo
+<span class="p">$ </span>sudo dnf install noida
 
 <span class="c"># with Rust, anywhere</span>
 <span class="p">$ </span>cargo install noida
@@ -453,7 +454,7 @@
           <li>CI on Linux and macOS</li>
           <li>Verified with rust-analyzer, TypeScript 7 and Pyright</li>
           <li>Smoke-test checklist for every release</li>
-          <li>Homebrew tap, .deb and .rpm packages</li>
+          <li>Homebrew tap, signed apt and dnf repositories</li>
         </ul>
       </li>
       <li class="next">
