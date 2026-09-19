@@ -106,12 +106,12 @@ cargo install --git https://github.com/its-banana-coder/noida   # or the latest 
 **Windows (PowerShell)** — a native `noida.exe`, no WSL:
 
 ```powershell
-curl.exe -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.4-alpha/noida-x86_64-pc-windows-msvc.zip
-Expand-Archive .\noida-x86_64-pc-windows-msvc.zip -DestinationPath "$env:LOCALAPPDATA\Programs\noida"
-[Environment]::SetEnvironmentVariable("Path", "$env:Path;$env:LOCALAPPDATA\Programs\noida", "User")
+irm https://its-banana-coder.github.io/noida/install.ps1 | iex
 ```
 
-Open a fresh [Windows Terminal](https://aka.ms/terminal) and run `noida .`. The agent hooks use a loopback socket instead of a Unix socket, and `claude`/`codex` start through their npm `.cmd` shims. This build passes the full test suite in CI, but nobody has driven the TUI on a real Windows machine yet, so if something looks wrong there, [please open an issue](https://github.com/its-banana-coder/noida/issues) — [WSL](https://learn.microsoft.com/windows/wsl/install) with the `.deb` above is the fallback.
+That downloads the latest release, installs it under `%LOCALAPPDATA%\Programs\noida`, puts it on your PATH for this session and the next, and tells you if `git` or an agent CLI is missing. No administrator rights needed, and running it again upgrades in place. ([Read it first](docs/install.ps1) if you'd rather not pipe a script into your shell — it is about 80 lines.)
+
+Then open a fresh [Windows Terminal](https://aka.ms/terminal) and run `noida .`. The agent hooks use a loopback socket instead of a Unix socket, and `claude`/`codex` start through their npm `.cmd` shims. The installer and the binary have been run on Windows 11, and CI runs the full test suite on every push, but nobody has driven the TUI through a full session there yet — so if something looks wrong, [please open an issue](https://github.com/its-banana-coder/noida/issues). [WSL](https://learn.microsoft.com/windows/wsl/install) with the `.deb` above is the fallback.
 
 | Download | For | Checked |
 |---|---|---|
@@ -122,7 +122,7 @@ Open a fresh [Windows Terminal](https://aka.ms/terminal) and run `noida .`. The 
 | `noida-x86_64-unknown-linux-musl.tar.gz` | Any Linux x86_64 (static) | ✅ runs on Ubuntu 22.04 |
 | `noida-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64, glibc 2.35+ | ✅ runs on Ubuntu 22.04 |
 | `noida-aarch64-unknown-linux-gnu.tar.gz` / `noida_arm64.deb` / `noida.aarch64.rpm` | Linux on ARM64: Raspberry Pi, Ampere, Graviton | ⚠️ built on an arm64 runner; not yet installed on real hardware |
-| `noida-x86_64-pc-windows-msvc.zip` | Windows 10/11 (x86_64) | ⚠️ builds and passes all tests in CI; never run on a real Windows machine |
+| `install.ps1` / `noida-x86_64-pc-windows-msvc.zip` | Windows 10/11 (x86_64) | ⚠️ installed and launched on Windows 11; TUI not yet driven through a full session |
 | `cargo install noida` | Any platform with Rust | ✅ installed from crates.io |
 
 Every download has a `.sha256` checksum beside it (`shasum -a 256 -c noida-*.sha256`).
