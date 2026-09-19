@@ -67,7 +67,7 @@ echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/noida.gpg] https://its-banana-
 sudo apt update && sudo apt install noida
 ```
 
-After that, `sudo apt upgrade` keeps NOIDA current. To install a single `.deb` instead: `curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.2-alpha/noida_amd64.deb && sudo apt install ./noida_amd64.deb`
+After that, `sudo apt upgrade` keeps NOIDA current. If you also ran `cargo install noida`, remove it (`cargo uninstall noida`) so `~/.cargo/bin` doesn't shadow the packaged binary. To install a single `.deb` instead: `curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.2-alpha/noida_amd64.deb && sudo apt install ./noida_amd64.deb`
 
 **Fedora / RHEL / openSUSE**
 
@@ -96,7 +96,7 @@ cargo install --git https://github.com/its-banana-coder/noida   # or the latest 
 |---|---|---|
 | `brew install …` / `noida-aarch64-apple-darwin.tar.gz` | macOS on Apple Silicon | ✅ installed and run on a macOS runner every week |
 | `noida-x86_64-apple-darwin.tar.gz` | macOS on Intel | ⚠️ builds, but nobody has run it yet |
-| apt repository / `noida_amd64.deb` | Debian, Ubuntu, WSL (x86_64) | ✅ installed and run in CI |
+| apt repository / `noida_amd64.deb` | Debian, Ubuntu, WSL (x86_64) | ✅ installed from the repo on Ubuntu 22.04 (WSL) and in CI |
 | `noida.x86_64.rpm` | Fedora, RHEL, openSUSE (x86_64) | ⚠️ built in CI, not installed yet |
 | `noida-x86_64-unknown-linux-musl.tar.gz` | Any Linux x86_64 (static) | ✅ runs on Ubuntu 22.04 |
 | `noida-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64, glibc 2.35+ | ✅ runs on Ubuntu 22.04 |
