@@ -32,7 +32,7 @@
 </p>
 
 > [!WARNING]
-> **Early preview (alpha).** NOIDA is used daily on Linux and WSL2. CI builds and tests every commit on Linux and macOS, but hands-on Mac use is still limited. Expect rough edges and please [tell us what breaks](#-feedback).
+> **Early preview (alpha).** NOIDA is used daily on Linux and WSL2. CI builds and tests every commit on Linux, macOS and Windows, but hands-on Mac and Windows use is still limited. Expect rough edges and please [tell us what breaks](#-feedback).
 
 ---
 
@@ -111,7 +111,7 @@ irm https://its-banana-coder.github.io/noida/install.ps1 | iex
 
 That downloads the latest release, installs it under `%LOCALAPPDATA%\Programs\noida`, puts it on your PATH for this session and the next, and tells you if `git` or an agent CLI is missing. No administrator rights needed, and running it again upgrades in place. ([Read it first](docs/install.ps1) if you'd rather not pipe a script into your shell — it is about 80 lines.)
 
-Then open a fresh [Windows Terminal](https://aka.ms/terminal) and run `noida .`. The agent hooks use a loopback socket instead of a Unix socket, and `claude`/`codex` start through their npm `.cmd` shims. The installer and the binary have been run on Windows 11, and CI runs the full test suite on every push, but nobody has driven the TUI through a full session there yet — so if something looks wrong, [please open an issue](https://github.com/its-banana-coder/noida/issues). [WSL](https://learn.microsoft.com/windows/wsl/install) with the `.deb` above is the fallback.
+Then open a fresh [Windows Terminal](https://aka.ms/terminal) and run `noida .`. The agent hooks use a loopback socket instead of a Unix socket, and `claude`/`codex` start through their npm `.cmd` shims. NOIDA installs, starts and draws correctly on Windows 11, and CI runs the full test suite there on every push — but a full session (agent panes, reference jumps, the git review) has not been put through its paces yet, so if something misbehaves, [please open an issue](https://github.com/its-banana-coder/noida/issues).
 
 | Download | For | Checked |
 |---|---|---|
@@ -122,7 +122,7 @@ Then open a fresh [Windows Terminal](https://aka.ms/terminal) and run `noida .`.
 | `noida-x86_64-unknown-linux-musl.tar.gz` | Any Linux x86_64 (static) | ✅ runs on Ubuntu 22.04 |
 | `noida-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64, glibc 2.35+ | ✅ runs on Ubuntu 22.04 |
 | `noida-aarch64-unknown-linux-gnu.tar.gz` / `noida_arm64.deb` / `noida.aarch64.rpm` | Linux on ARM64: Raspberry Pi, Ampere, Graviton | ⚠️ built on an arm64 runner; not yet installed on real hardware |
-| `install.ps1` / `noida-x86_64-pc-windows-msvc.zip` | Windows 10/11 (x86_64) | ⚠️ installed and launched on Windows 11; TUI not yet driven through a full session |
+| `install.ps1` / `noida-x86_64-pc-windows-msvc.zip` | Windows 10/11 (x86_64) | ✅ installs and runs on Windows 11, UI renders in Windows Terminal · ⚠️ a full session is still unexercised |
 | `cargo install noida` | Any platform with Rust | ✅ installed from crates.io |
 
 Every download has a `.sha256` checksum beside it (`shasum -a 256 -c noida-*.sha256`).
@@ -374,7 +374,7 @@ Extension marketplace · built-in AI chat or model · accounts and cloud sync ·
 | ✅ **Tested live** (Linux/WSL2, tmux and Windows Terminal, Claude Code 2.1, Codex CLI, rust-analyzer) | Reference clicking and jumps · agent tabs, split, hook status, activity, sessions/resume, new-session button, rename, history browser, workspace restore · hunk review, staged view, log and file history · worktree agents · LSP with rust-analyzer, TypeScript 7 and Pyright (diagnostics, hover, definition, references, format, code actions) · editing, multi-cursor, find widget, split editor, Markdown preview · find and copy in agent panes · custom keybindings · changed files per agent · workspace search/replace · tab and file tree actions · folding, word wrap · code actions, formatting · light theme |
 | 🍎 **macOS** | Builds and all tests pass in CI on every commit; little hands-on use yet |
 | 🧪 **Unit-tested, little hands-on use** | `Ctrl+Shift` shortcuts (kitty protocol) · compare agents, send prompt to two agents, fix-findings handoff · editor context sharing · sticky scroll |
-| ❔ **Not tested yet** | The Windows build on a real Windows machine (it builds and passes every test in CI) · very large repos · gopls and pylsp |
+| ❔ **Not tested yet** | A full Windows session: agent panes, reference jumps and git review (it installs, starts and draws there, and passes every test in CI) · very large repos · gopls and pylsp |
 
 **Good to know**
 - 💥 Agents run inside NOIDA, so a crash stops them too. Your terminal is restored, and conversations can be resumed via **Sessions** (`Alt+g`).
