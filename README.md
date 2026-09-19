@@ -63,11 +63,11 @@ brew install noida
 ```bash
 sudo install -d /etc/apt/keyrings
 curl -fsSL https://its-banana-coder.github.io/noida/apt/key.gpg | sudo tee /etc/apt/keyrings/noida.gpg >/dev/null
-echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/noida.gpg] https://its-banana-coder.github.io/noida/apt stable main" | sudo tee /etc/apt/sources.list.d/noida.list >/dev/null
+echo "deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/noida.gpg] https://its-banana-coder.github.io/noida/apt stable main" | sudo tee /etc/apt/sources.list.d/noida.list >/dev/null
 sudo apt update && sudo apt install noida
 ```
 
-After that, `sudo apt upgrade` keeps NOIDA current. If you also ran `cargo install noida`, remove it (`cargo uninstall noida`) so `~/.cargo/bin` doesn't shadow the packaged binary. To install a single `.deb` instead: `curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.3-alpha/noida_amd64.deb && sudo apt install ./noida_amd64.deb`
+After that, `sudo apt upgrade` keeps NOIDA current. If you also ran `cargo install noida`, remove it (`cargo uninstall noida`) so `~/.cargo/bin` doesn't shadow the packaged binary. To install a single `.deb` instead: `curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.4-alpha/noida_amd64.deb && sudo apt install ./noida_amd64.deb`
 
 **Fedora / RHEL / openSUSE (dnf repository, with upgrades)** — add it once:
 
@@ -79,7 +79,7 @@ sudo dnf install noida
 On older releases use `sudo dnf config-manager --add-repo=...`, and on openSUSE `sudo zypper ar https://its-banana-coder.github.io/noida/rpm/noida.repo && sudo zypper in noida`. The repository metadata is GPG-signed with the same key as the apt repository, and `dnf upgrade` keeps NOIDA current. To install a single `.rpm` instead:
 
 ```bash
-curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.3-alpha/noida.x86_64.rpm
+curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.4-alpha/noida.x86_64.rpm
 sudo dnf install ./noida.x86_64.rpm      # or: sudo rpm -i noida.x86_64.rpm
 ```
 
@@ -100,7 +100,7 @@ cargo install --git https://github.com/its-banana-coder/noida   # or the latest 
 **Windows (PowerShell)** — a native `noida.exe`, no WSL:
 
 ```powershell
-curl.exe -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.3-alpha/noida-x86_64-pc-windows-msvc.zip
+curl.exe -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.4-alpha/noida-x86_64-pc-windows-msvc.zip
 Expand-Archive .\noida-x86_64-pc-windows-msvc.zip -DestinationPath "$env:LOCALAPPDATA\Programs\noida"
 [Environment]::SetEnvironmentVariable("Path", "$env:Path;$env:LOCALAPPDATA\Programs\noida", "User")
 ```
@@ -115,6 +115,7 @@ Open a fresh [Windows Terminal](https://aka.ms/terminal) and run `noida .`. The 
 | dnf repository / `noida.x86_64.rpm` | Fedora, RHEL, openSUSE (x86_64) | ⚠️ built and signed in CI; not yet installed on a real Fedora machine |
 | `noida-x86_64-unknown-linux-musl.tar.gz` | Any Linux x86_64 (static) | ✅ runs on Ubuntu 22.04 |
 | `noida-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64, glibc 2.35+ | ✅ runs on Ubuntu 22.04 |
+| `noida-aarch64-unknown-linux-gnu.tar.gz` / `noida_arm64.deb` / `noida.aarch64.rpm` | Linux on ARM64: Raspberry Pi, Ampere, Graviton | ⚠️ built on an arm64 runner; not yet installed on real hardware |
 | `noida-x86_64-pc-windows-msvc.zip` | Windows 10/11 (x86_64) | ⚠️ builds and passes all tests in CI; never run on a real Windows machine |
 | `cargo install noida` | Any platform with Rust | ✅ installed from crates.io |
 
@@ -422,6 +423,7 @@ Before a release, run the [smoke-test checklist](TESTING.md) in a real terminal.
 - Pushing a `v*` tag runs the [release workflow](.github/workflows/release.yml) on GitHub-hosted machines:
   - **Linux** builds on Ubuntu 22.04 (so the glibc build runs on 22.04 and newer) plus a fully static musl build, and `.deb`/`.rpm` packages (the `.deb` is installed and run in CI).
   - **Windows** builds on `windows-latest` with MSVC and ships as a `.zip`; CI runs the whole test suite there on every push.
+  - **Linux on ARM64** builds natively on GitHub's `ubuntu-22.04-arm` runners, with its own `.deb` and `.rpm`; both repositories serve `amd64` and `arm64`.
   - **macOS** builds on an Apple Silicon runner. The Intel binary is cross-compiled there, because GitHub no longer offers Intel Mac runners.
   - Each binary is started with `--version` where the runner can execute it, then packaged with a checksum and attached to a GitHub Release. Tags with `-alpha` or `-beta` are marked as prereleases.
 - **apt and dnf repositories:** `scripts/publish-repos.sh` rebuilds both pools and their signed metadata from every release and pushes the site plus repository to the `gh-pages` branch, which GitHub Pages serves. The signing key stays on the maintainer's machine; only the public key is published.

@@ -397,7 +397,7 @@
       <div>
         <h2 id="install-h">Install in a minute.</h2>
         <p class="muted">Download a binary for Linux, macOS or Windows from the <a href="https://github.com/its-banana-coder/noida/releases">latest release</a>, or build from source with Rust 1.88 or newer. NOIDA adds a tab for each agent CLI it finds on your <code>PATH</code>.</p>
-        <p class="muted">Also available: static and glibc Linux binaries, macOS tarballs for Apple Silicon and Intel, and <code>cargo install noida</code> from crates.io. Every download has a checksum, and all of them are built in the open on GitHub Actions. Windows gets a native <code>noida.exe</code>: it passes the full test suite in CI, though nobody has driven the TUI on a real Windows machine yet, so WSL with the <code>.deb</code> remains the fallback.</p>
+        <p class="muted">Also available: static, glibc and ARM64 Linux binaries, macOS tarballs for Apple Silicon and Intel, and <code>cargo install noida</code> from crates.io. Every download has a checksum, and all of them are built in the open on GitHub Actions. Windows gets a native <code>noida.exe</code>: it passes the full test suite in CI, though nobody has driven the TUI on a real Windows machine yet, so WSL with the <code>.deb</code> remains the fallback.</p>
         <p class="muted">On a Mac, set your terminal's Option key to act as Alt, or press <kbd>Ctrl+]</kbd> before any shortcut. The <a href="https://github.com/its-banana-coder/noida#-macos-option-as-alt">README has the setting for each terminal</a>.</p>
       </div>
       <div class="cmd" id="cmd">
@@ -406,7 +406,7 @@
 
 <span class="c"># Debian · Ubuntu · WSL</span>
 <span class="p">$ </span>curl -fsSL https://its-banana-coder.github.io/noida/apt/key.gpg | sudo tee /etc/apt/keyrings/noida.gpg &gt;/dev/null
-<span class="p">$ </span>echo "deb [signed-by=/etc/apt/keyrings/noida.gpg] https://its-banana-coder.github.io/noida/apt stable main" | sudo tee /etc/apt/sources.list.d/noida.list
+<span class="p">$ </span>echo "deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/noida.gpg] https://its-banana-coder.github.io/noida/apt stable main" | sudo tee /etc/apt/sources.list.d/noida.list
 <span class="p">$ </span>sudo apt update &amp;&amp; sudo apt install noida
 
 <span class="c"># Fedora · RHEL</span>

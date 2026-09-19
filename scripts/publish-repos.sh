@@ -2,7 +2,7 @@
 # Publish the website plus APT and RPM repositories to the gh-pages branch.
 #
 #   scripts/publish-repos.sh            # rebuild from every release
-#   scripts/publish-repos.sh v0.1.3-alpha   # ...and make sure this tag is included
+#   scripts/publish-repos.sh v0.1.4-alpha   # ...and make sure this tag is included
 #
 # Needs: gpg with the signing key below, apt-ftparchive (apt-utils),
 # createrepo_c (createrepo-c), gh.
@@ -19,16 +19,29 @@ command -v apt-ftparchive >/dev/null || { echo "install apt-utils first: sudo ap
 command -v createrepo_c >/dev/null || { echo "install createrepo-c first: sudo apt install createrepo-c"; exit 1; }
 gpg --list-secret-keys "$key_id" >/dev/null || { echo "no signing key for $key_id"; exit 1; }
 
+# Debian and rpm spell the same machines differently.
+deb_arches="amd64 arm64"
+rpm_arches="x86_64 aarch64"
+
 echo "==> collecting packages from releases"
-mkdir -p "$work/site/apt/pool/main/n/noida" "$work/site/apt/dists/stable/main/binary-amd64" "$work/site/rpm/x86_64"
+mkdir -p "$work/site/apt/pool/main/n/noida"
+for a in $deb_arches; do mkdir -p "$work/site/apt/dists/stable/main/binary-$a"; done
+for a in $rpm_arches; do mkdir -p "$work/site/rpm/$a"; done
 for tag in $(gh api "repos/$repo/releases?per_page=50" --jq '.[].tag_name'); do
   version="${tag#v}"
   rm -rf "$work/dl"
-  if gh release download "$tag" -R "$repo" -p 'noida_amd64.deb' -p 'noida.x86_64.rpm' -D "$work/dl" 2>/dev/null; then
-    [ -f "$work/dl/noida_amd64.deb" ] &&
-      mv "$work/dl/noida_amd64.deb" "$work/site/apt/pool/main/n/noida/noida_${version}_amd64.deb"
-    [ -f "$work/dl/noida.x86_64.rpm" ] &&
-      mv "$work/dl/noida.x86_64.rpm" "$work/site/rpm/x86_64/noida-${version}.x86_64.rpm"
+  patterns=()
+  for a in $deb_arches; do patterns+=(-p "noida_$a.deb"); done
+  for a in $rpm_arches; do patterns+=(-p "noida.$a.rpm"); done
+  if gh release download "$tag" -R "$repo" "${patterns[@]}" -D "$work/dl" 2>/dev/null; then
+    for a in $deb_arches; do
+      [ -f "$work/dl/noida_$a.deb" ] &&
+        mv "$work/dl/noida_$a.deb" "$work/site/apt/pool/main/n/noida/noida_${version}_$a.deb"
+    done
+    for a in $rpm_arches; do
+      [ -f "$work/dl/noida.$a.rpm" ] &&
+        mv "$work/dl/noida.$a.rpm" "$work/site/rpm/$a/noida-${version}.$a.rpm"
+    done
     echo "    $tag"
   fi
 done
@@ -36,14 +49,17 @@ ls "$work/site/apt/pool/main/n/noida/"*.deb >/dev/null 2>&1 || { echo "no .deb a
 
 echo "==> building repository metadata"
 cd "$work/site/apt"
-dpkg-scanpackages --multiversion pool /dev/null > dists/stable/main/binary-amd64/Packages 2>/dev/null
-gzip -9kf dists/stable/main/binary-amd64/Packages
+for a in $deb_arches; do
+  # Each architecture's index must list only its own packages.
+  dpkg-scanpackages --multiversion --arch "$a" pool /dev/null > "dists/stable/main/binary-$a/Packages" 2>/dev/null
+  gzip -9kf "dists/stable/main/binary-$a/Packages"
+done
 cat > "$work/apt-release.conf" <<EOF
 APT::FTPArchive::Release::Origin "NOIDA";
 APT::FTPArchive::Release::Label "NOIDA";
 APT::FTPArchive::Release::Suite "stable";
 APT::FTPArchive::Release::Codename "stable";
-APT::FTPArchive::Release::Architectures "amd64";
+APT::FTPArchive::Release::Architectures "$deb_arches";
 APT::FTPArchive::Release::Components "main";
 APT::FTPArchive::Release::Description "NOIDA: a terminal IDE built around Claude Code and Codex";
 EOF
@@ -57,15 +73,22 @@ gpg --export "$key_id" > key.gpg
 
 echo "==> building the rpm repository"
 cd "$work/site/rpm"
-if ls x86_64/*.rpm >/dev/null 2>&1; then
-  createrepo_c --quiet x86_64
+found=""
+for a in $rpm_arches; do
+  ls "$a"/*.rpm >/dev/null 2>&1 || { rmdir "$a" 2>/dev/null; continue; }
+  createrepo_c --quiet "$a"
   # dnf verifies repomd.xml's signature when repo_gpgcheck=1.
-  gpg --batch --yes --local-user "$key_id" --detach-sign --armor x86_64/repodata/repomd.xml
+  gpg --batch --yes --local-user "$key_id" --detach-sign --armor "$a/repodata/repomd.xml"
+  found="$found $a"
+done
+if [ -n "$found" ]; then
+  echo "   arches:$found"
   gpg --export --armor "$key_id" > key.asc
+  # $basearch lets one repo file serve every architecture.
   {
     echo "[noida]"
     echo "name=NOIDA"
-    echo "baseurl=https://its-banana-coder.github.io/noida/rpm/x86_64"
+    echo "baseurl=https://its-banana-coder.github.io/noida/rpm/\$basearch"
     echo "enabled=1"
     echo "repo_gpgcheck=1"
     echo "gpgcheck=0"
