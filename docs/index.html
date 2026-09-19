@@ -413,6 +413,10 @@
 <span class="p">$ </span>sudo dnf config-manager --add-repo https://its-banana-coder.github.io/noida/rpm/noida.repo
 <span class="p">$ </span>sudo dnf install noida
 
+<span class="c"># Windows (PowerShell)</span>
+<span class="p">&gt; </span>curl.exe -LO https://github.com/its-banana-coder/noida/releases/latest/download/noida-x86_64-pc-windows-msvc.zip
+<span class="p">&gt; </span>Expand-Archive .\noida-x86_64-pc-windows-msvc.zip -DestinationPath "$env:LOCALAPPDATA\Programs\noida"
+
 <span class="c"># with Rust, anywhere</span>
 <span class="p">$ </span>cargo install noida
 

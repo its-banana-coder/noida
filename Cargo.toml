@@ -1,6 +1,6 @@
 [package]
 name = "noida"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.88"
 description = "Navigation-Oriented IDE for Developer Agents: a terminal IDE with clickable file references from Claude Code / Codex"

@@ -67,7 +67,7 @@ echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/noida.gpg] https://its-banana-
 sudo apt update && sudo apt install noida
 ```
 
-After that, `sudo apt upgrade` keeps NOIDA current. If you also ran `cargo install noida`, remove it (`cargo uninstall noida`) so `~/.cargo/bin` doesn't shadow the packaged binary. To install a single `.deb` instead: `curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.2-alpha/noida_amd64.deb && sudo apt install ./noida_amd64.deb`
+After that, `sudo apt upgrade` keeps NOIDA current. If you also ran `cargo install noida`, remove it (`cargo uninstall noida`) so `~/.cargo/bin` doesn't shadow the packaged binary. To install a single `.deb` instead: `curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.3-alpha/noida_amd64.deb && sudo apt install ./noida_amd64.deb`
 
 **Fedora / RHEL / openSUSE (dnf repository, with upgrades)** — add it once:
 
@@ -79,7 +79,7 @@ sudo dnf install noida
 On older releases use `sudo dnf config-manager --add-repo=...`, and on openSUSE `sudo zypper ar https://its-banana-coder.github.io/noida/rpm/noida.repo && sudo zypper in noida`. The repository metadata is GPG-signed with the same key as the apt repository, and `dnf upgrade` keeps NOIDA current. To install a single `.rpm` instead:
 
 ```bash
-curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.2-alpha/noida.x86_64.rpm
+curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.3-alpha/noida.x86_64.rpm
 sudo dnf install ./noida.x86_64.rpm      # or: sudo rpm -i noida.x86_64.rpm
 ```
 
@@ -97,13 +97,15 @@ cargo install noida                                        # from crates.io
 cargo install --git https://github.com/its-banana-coder/noida   # or the latest commit
 ```
 
-**Windows:** a native build now compiles and passes the full test suite on `windows-latest`, and `noida-x86_64-pc-windows-msvc.zip` ships with the next release. Until then, build it yourself in PowerShell (needs Rust and the MSVC build tools):
+**Windows (PowerShell)** — a native `noida.exe`, no WSL:
 
 ```powershell
-cargo install --git https://github.com/its-banana-coder/noida
+curl.exe -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.3-alpha/noida-x86_64-pc-windows-msvc.zip
+Expand-Archive .\noida-x86_64-pc-windows-msvc.zip -DestinationPath "$env:LOCALAPPDATA\Programs\noida"
+[Environment]::SetEnvironmentVariable("Path", "$env:Path;$env:LOCALAPPDATA\Programs\noida", "User")
 ```
 
-The agent hooks use a loopback socket there instead of a Unix socket, and `claude`/`codex` are started through their npm `.cmd` shims. Nobody has driven the TUI on a real Windows machine yet, so [WSL](https://learn.microsoft.com/windows/wsl/install) with the `.deb` above is still the route I'd trust for now.
+Open a fresh [Windows Terminal](https://aka.ms/terminal) and run `noida .`. The agent hooks use a loopback socket instead of a Unix socket, and `claude`/`codex` start through their npm `.cmd` shims. This build passes the full test suite in CI, but nobody has driven the TUI on a real Windows machine yet, so if something looks wrong there, [please open an issue](https://github.com/its-banana-coder/noida/issues) — [WSL](https://learn.microsoft.com/windows/wsl/install) with the `.deb` above is the fallback.
 
 | Download | For | Checked |
 |---|---|---|
