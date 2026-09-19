@@ -51,10 +51,15 @@ pub fn auto_close() -> bool {
     AUTO_CLOSE.load(Ordering::Relaxed)
 }
 
+/// The user's home directory. Windows spells it `USERPROFILE`.
+pub fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
+}
+
 pub fn path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        .or_else(|| home().map(|h| h.join(".config")))?;
     Some(base.join("noida/settings.json"))
 }
 

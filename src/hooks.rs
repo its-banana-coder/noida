@@ -1,11 +1,18 @@
 //! Structured agent events via Claude Code hooks and Codex `notify`.
 //!
-//! NOIDA listens on a Unix socket. Agents it launches get extra settings that
+//! NOIDA listens on a local socket. Agents it launches get extra settings that
 //! run `noida hook` (Claude) or `noida hook-codex` (Codex); those tiny client
 //! processes forward the event JSON to the socket and exit without output, so
 //! they never influence the agent's own decisions or permission prompts.
+//!
+//! The socket is a Unix socket where there is one, and a loopback TCP socket on
+//! Windows. `NOIDA_SOCKET` carries whichever address applies, so the client side
+//! only ever has to echo it back.
 
 use std::io::{Read, Write};
+#[cfg(windows)]
+use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -14,6 +21,12 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::events::Bg;
+
+/// One connection from a hook client.
+#[cfg(unix)]
+type Stream = UnixStream;
+#[cfg(windows)]
+type Stream = TcpStream;
 
 pub const ENV_SOCKET: &str = "NOIDA_SOCKET";
 pub const ENV_AGENT: &str = "NOIDA_AGENT_ID";
@@ -31,9 +44,12 @@ pub enum AgentEvent {
 }
 
 pub struct Server {
-    pub path: PathBuf,
+    /// What to put in `NOIDA_SOCKET`: a socket path, or `host:port#token`.
+    pub addr: String,
     /// File holding the user's current editor context, read by `noida hook`.
     pub context: PathBuf,
+    /// Socket file to delete on exit; Windows has none.
+    cleanup: Option<PathBuf>,
 }
 
 impl Server {
@@ -43,14 +59,29 @@ impl Server {
             let tmp = std::env::temp_dir();
             if tmp.as_os_str().len() > 40 && Path::new("/tmp").is_dir() { PathBuf::from("/tmp") } else { tmp }
         });
-        let path = dir.join(format!("noida-{}.sock", std::process::id()));
         let context = dir.join(format!("noida-{}.ctx", std::process::id()));
         let _ = std::fs::write(&context, "");
-        let _ = std::fs::remove_file(&path);
-        let listener = UnixListener::bind(&path)?;
+
+        #[cfg(unix)]
+        let (addr, cleanup, listener) = {
+            let path = dir.join(format!("noida-{}.sock", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let listener = UnixListener::bind(&path)?;
+            (path.to_string_lossy().into_owned(), Some(path), listener)
+        };
+        #[cfg(windows)]
+        let (addr, cleanup, listener) = {
+            // Any local process could reach a loopback port, so the address
+            // carries a token that only the agents we launch are given.
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let token = token();
+            (format!("{}#{token}", listener.local_addr()?), None, listener)
+        };
+        let want = expected_token(&addr);
+
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                if let Some((agent, events)) = read_message(stream) {
+                if let Some((agent, events)) = read_message(stream, want.as_deref()) {
                     for ev in events {
                         if tx.send(Bg::Hook(agent, ev)).is_err() {
                             return;
@@ -59,18 +90,35 @@ impl Server {
                 }
             }
         });
-        Ok(Server { path, context })
+        Ok(Server { addr, context, cleanup })
     }
+}
+
+/// The token in a `host:port#token` address, if it has one.
+fn expected_token(addr: &str) -> Option<String> {
+    addr.split_once('#').map(|(_, t)| t.to_string())
+}
+
+#[cfg(windows)]
+fn token() -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    std::process::id().hash(&mut h);
+    std::time::SystemTime::now().hash(&mut h);
+    std::time::Instant::now().hash(&mut h);
+    format!("{:016x}", h.finish())
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if let Some(path) = &self.cleanup {
+            let _ = std::fs::remove_file(path);
+        }
         let _ = std::fs::remove_file(&self.context);
     }
 }
 
-fn read_message(mut stream: UnixStream) -> Option<(usize, Vec<AgentEvent>)> {
+fn read_message(mut stream: Stream, want: Option<&str>) -> Option<(usize, Vec<AgentEvent>)> {
     // macOS rejects SO_RCVTIMEO (EINVAL) once the peer has closed, which hook
     // clients do right after writing; the data is still readable, so ignore it.
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -84,6 +132,18 @@ fn read_message(mut stream: UnixStream) -> Option<(usize, Vec<AgentEvent>)> {
         }
     }
     let raw = String::from_utf8_lossy(&bytes).into_owned();
+    let raw = match want {
+        // A loopback socket is reachable by any local process, so drop anything
+        // that cannot quote the token we handed the agent.
+        Some(want) => {
+            let (got, rest) = raw.split_once('\n')?;
+            if got.trim() != want {
+                return None;
+            }
+            rest.to_string()
+        }
+        None => raw,
+    };
     let mut parts = raw.splitn(3, '\n');
     let agent: usize = parts.next()?.trim().parse().ok()?;
     let source = parts.next()?.trim().to_string();
@@ -98,11 +158,22 @@ fn read_message(mut stream: UnixStream) -> Option<(usize, Vec<AgentEvent>)> {
 
 /// Client side: forward one event to the running NOIDA. Never fails loudly.
 pub fn forward(source: &str, payload: &str) {
-    let (Some(sock), Some(agent)) = (std::env::var_os(ENV_SOCKET), std::env::var(ENV_AGENT).ok()) else { return };
-    let Ok(mut stream) = UnixStream::connect(sock) else { return };
+    let (Ok(sock), Ok(agent)) = (std::env::var(ENV_SOCKET), std::env::var(ENV_AGENT)) else { return };
+    let Some(mut stream) = connect(&sock) else { return };
+    let prefix = match sock.split_once('#') {
+        Some((_, token)) => format!("{token}\n"),
+        None => String::new(),
+    };
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = stream.write_all(format!("{agent}\n{source}\n{payload}").as_bytes());
+    let _ = stream.write_all(format!("{prefix}{agent}\n{source}\n{payload}").as_bytes());
     let _ = stream.shutdown(std::net::Shutdown::Write);
+}
+
+fn connect(addr: &str) -> Option<Stream> {
+    #[cfg(unix)]
+    return UnixStream::connect(addr).ok();
+    #[cfg(windows)]
+    return TcpStream::connect(addr.split('#').next()?).ok();
 }
 
 /// For UserPromptSubmit, text printed to stdout is added to Claude's context.
@@ -161,7 +232,11 @@ pub fn parse_codex(v: &Value) -> Vec<AgentEvent> {
 
 /// `--settings` JSON adding NOIDA's hooks on top of the user's own settings.
 pub fn claude_settings(exe: &Path) -> String {
+    // Hook commands run through a shell: POSIX quoting on Unix, cmd.exe on Windows.
+    #[cfg(unix)]
     let command = format!("'{}' hook", exe.to_string_lossy().replace('\'', r"'\''"));
+    #[cfg(windows)]
+    let command = format!("\"{}\" hook", exe.to_string_lossy());
     let hook = json!([{ "matcher": "*", "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }]);
     let plain = json!([{ "hooks": [{ "type": "command", "command": command, "timeout": 5 }] }]);
     json!({
@@ -221,8 +296,12 @@ mod tests {
     fn socket_roundtrip() {
         let (tx, rx) = std::sync::mpsc::channel();
         let server = Server::start(tx).unwrap();
-        let mut s = UnixStream::connect(&server.path).unwrap();
-        s.write_all(b"7\nclaude\n{\"hook_event_name\":\"Stop\"}").unwrap();
+        let mut s = connect(&server.addr).unwrap();
+        let prefix = match server.addr.split_once('#') {
+            Some((_, token)) => format!("{token}\n"),
+            None => String::new(),
+        };
+        s.write_all(format!("{prefix}7\nclaude\n{{\"hook_event_name\":\"Stop\"}}").as_bytes()).unwrap();
         s.shutdown(std::net::Shutdown::Write).unwrap();
         drop(s);
         match rx.recv_timeout(Duration::from_secs(10)).expect("hook event") {
@@ -230,6 +309,11 @@ mod tests {
             _ => panic!("unexpected event"),
         }
         let settings: Value = serde_json::from_str(&claude_settings(Path::new("/opt/it's/noida"))).unwrap();
-        assert_eq!(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "'/opt/it'\\''s/noida' hook");
+        let command = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap();
+        if cfg!(unix) {
+            assert_eq!(command, "'/opt/it'\\''s/noida' hook");
+        } else {
+            assert_eq!(command, "\"/opt/it's/noida\" hook");
+        }
     }
 }

@@ -44,7 +44,7 @@ pub fn claude_project_dir(home: &Path, cwd: &Path) -> PathBuf {
 }
 
 pub fn list(cwd: &Path) -> Vec<PastSession> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return Vec::new() };
+    let Some(home) = crate::settings::home() else { return Vec::new() };
     let mut out = claude_sessions(&home, cwd);
     out.extend(codex_sessions(&home, cwd));
     out.sort_by(|a, b| b.modified.cmp(&a.modified));
@@ -150,7 +150,7 @@ fn codex_meta(path: &Path) -> Option<(String, PathBuf, String)> {
 
 /// Title of a Claude session (custom or AI-generated), for naming its tab.
 pub fn claude_session_title(cwd: &Path, id: &str) -> Option<String> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let home = crate::settings::home()?;
     claude_title(&claude_project_dir(&home, cwd).join(format!("{id}.jsonl")))
 }
 

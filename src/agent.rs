@@ -199,11 +199,12 @@ impl Agent {
     }
 
     fn try_start(&mut self, tx: Sender<Bg>, extra_args: &[String], env: &[(String, String)]) -> Result<()> {
+        // (see command_for below for how the program name is resolved)
         let (rows, cols) = self.size;
         let pair = native_pty_system()
             .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
             .context("failed to open pty")?;
-        let mut cmd = CommandBuilder::new(&self.program);
+        let mut cmd = command_for(&self.program);
         cmd.args(&self.args);
         cmd.args(extra_args);
         cmd.cwd(&self.cwd);
@@ -748,6 +749,53 @@ pub fn encode_key(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
         _ => {}
     }
     out
+}
+
+/// Build the command that starts an agent.
+///
+/// On Windows `claude` and `codex` are installed by npm as `.cmd` shims, which
+/// `CreateProcess` cannot run; those have to go through `cmd.exe /C`. Elsewhere
+/// the program name is used as given.
+#[cfg(not(windows))]
+fn command_for(program: &str) -> CommandBuilder {
+    CommandBuilder::new(program)
+}
+
+#[cfg(windows)]
+fn command_for(program: &str) -> CommandBuilder {
+    match resolve_windows(program) {
+        Some(path) if matches!(path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(), Some("cmd" | "bat")) => {
+            let mut cmd = CommandBuilder::new("cmd.exe");
+            cmd.arg("/C");
+            cmd.arg(path);
+            cmd
+        }
+        Some(path) => CommandBuilder::new(path),
+        None => CommandBuilder::new(program),
+    }
+}
+
+/// Find `program` on PATH, trying each PATHEXT extension as the shell would.
+#[cfg(windows)]
+fn resolve_windows(program: &str) -> Option<PathBuf> {
+    let raw = Path::new(program);
+    if raw.components().count() > 1 {
+        return raw.exists().then(|| raw.to_path_buf());
+    }
+    let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    for dir in std::env::split_paths(&std::env::var_os("PATH")?) {
+        let base = dir.join(program);
+        if base.is_file() {
+            return Some(base);
+        }
+        for ext in exts.split(';').filter(|e| !e.is_empty()) {
+            let candidate = dir.join(format!("{program}{ext}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

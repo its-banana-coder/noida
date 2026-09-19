@@ -489,7 +489,7 @@ impl App {
         let mut args: Vec<String> = Vec::new();
         let mut env = vec![(hooks::ENV_AGENT.to_string(), a.id.to_string())];
         if let Some(server) = &self.hook_server {
-            env.push((hooks::ENV_SOCKET.to_string(), server.path.to_string_lossy().into_owned()));
+            env.push((hooks::ENV_SOCKET.to_string(), server.addr.clone()));
             env.push((hooks::ENV_CONTEXT.to_string(), server.context.to_string_lossy().into_owned()));
         }
         let hooked = self.hook_server.is_some();
@@ -501,7 +501,7 @@ impl App {
                     args.extend(["--settings".to_string(), hooks::claude_settings(&self.exe)]);
                 }
                 if !has_flag(&a.command, &["--resume", "-r", "--continue", "-c", "--session-id"]) {
-                    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+                    let home = crate::settings::home().unwrap_or_default();
                     let transcript = a.session_id.as_ref().map(|id| sessions::claude_project_dir(&home, &a.cwd).join(format!("{id}.jsonl")));
                     match (&a.session_id, transcript) {
                         (Some(id), Some(t)) if t.exists() => {

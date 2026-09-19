@@ -100,9 +100,9 @@ pub fn now() -> u64 {
 
 impl Activity {
     pub fn new(root: PathBuf) -> Self {
-        let history_file = std::env::var_os("HOME").map(|h| {
+        let history_file = crate::settings::home().map(|h| {
             let escaped: String = root.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-            PathBuf::from(h).join(".local/share/noida/history").join(format!("{escaped}.jsonl"))
+            h.join(".local/share/noida/history").join(format!("{escaped}.jsonl"))
         });
         Self { root, history_file, turns: Vec::new(), open: HashMap::new(), touched: HashMap::new(), existed: HashMap::new() }
     }

@@ -50,9 +50,9 @@ pub struct Workspace {
 }
 
 pub fn path_for(root: &Path) -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")?;
+    let home = crate::settings::home()?;
     let escaped: String = root.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    Some(PathBuf::from(home).join(".local/share/noida/workspaces").join(format!("{escaped}.json")))
+    Some(home.join(".local/share/noida/workspaces").join(format!("{escaped}.json")))
 }
 
 pub fn load(root: &Path) -> Option<Workspace> {

@@ -33,6 +33,10 @@ jobs:
           # Intel build is cross-compiled on Apple Silicon instead.
           - target: x86_64-apple-darwin
             os: macos-14
+          # Windows is newly supported; a failure there must not block a release.
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            experimental: true
     steps:
       - uses: actions/checkout@v4
 
@@ -57,18 +61,29 @@ jobs:
         if: runner.os == 'Linux' || matrix.target == 'aarch64-apple-darwin'
         run: target/${{ matrix.target }}/release/noida --version
 
+      - name: Check the binary starts (Windows)
+        if: runner.os == 'Windows'
+        run: target/${{ matrix.target }}/release/noida.exe --version
+
       - name: Package
         shell: bash
         run: |
           set -euo pipefail
           name="noida-${{ matrix.target }}"
-          tar -C "target/${{ matrix.target }}/release" -czf "$name.tar.gz" noida
-          if command -v sha256sum >/dev/null; then
-            sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          # Windows users expect a .zip; everyone else gets the usual tarball.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            archive="$name.zip"
+            (cd "target/${{ matrix.target }}/release" && 7z a -bso0 "$OLDPWD/$archive" noida.exe)
           else
-            shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+            archive="$name.tar.gz"
+            tar -C "target/${{ matrix.target }}/release" -czf "$archive" noida
           fi
-          cat "$name.tar.gz.sha256"
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+          cat "$archive.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -76,6 +91,8 @@ jobs:
           path: |
             noida-${{ matrix.target }}.tar.gz
             noida-${{ matrix.target }}.tar.gz.sha256
+            noida-${{ matrix.target }}.zip
+            noida-${{ matrix.target }}.zip.sha256
           if-no-files-found: error
 
   packages:

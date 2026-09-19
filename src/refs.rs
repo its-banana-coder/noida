@@ -105,7 +105,7 @@ impl Resolver {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
-            home: std::env::var_os("HOME").map(PathBuf::from),
+            home: crate::settings::home(),
             index: Arc::default(),
             cache: HashMap::new(),
         }
