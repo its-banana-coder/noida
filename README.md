@@ -367,7 +367,7 @@ Extension marketplace · built-in AI chat or model · accounts and cloud sync ·
 | ✅ **Tested live** (Linux/WSL2, tmux and Windows Terminal, Claude Code 2.1, Codex CLI, rust-analyzer) | Reference clicking and jumps · agent tabs, split, hook status, activity, sessions/resume, new-session button, rename, history browser, workspace restore · hunk review, staged view, log and file history · worktree agents · LSP with rust-analyzer, TypeScript 7 and Pyright (diagnostics, hover, definition, references, format, code actions) · editing, multi-cursor, find widget, split editor, Markdown preview · find and copy in agent panes · custom keybindings · changed files per agent · workspace search/replace · tab and file tree actions · folding, word wrap · code actions, formatting · light theme |
 | 🍎 **macOS** | Builds and all tests pass in CI on every commit; little hands-on use yet |
 | 🧪 **Unit-tested, little hands-on use** | `Ctrl+Shift` shortcuts (kitty protocol) · compare agents, send prompt to two agents, fix-findings handoff · editor context sharing · sticky scroll |
-| ❔ **Not tested yet** | Native Windows (not supported) · very large repos · gopls and pylsp |
+| ❔ **Not tested yet** | The Windows build on a real Windows machine (it builds and passes every test in CI) · very large repos · gopls and pylsp |
 
 **Good to know**
 - 💥 Agents run inside NOIDA, so a crash stops them too. Your terminal is restored, and conversations can be resumed via **Sessions** (`Alt+g`).
@@ -421,6 +421,7 @@ Before a release, run the [smoke-test checklist](TESTING.md) in a real terminal.
 - Every push runs CI on GitHub Actions: build and all tests on Ubuntu and macOS, plus a build with the minimum Rust version (1.88).
 - Pushing a `v*` tag runs the [release workflow](.github/workflows/release.yml) on GitHub-hosted machines:
   - **Linux** builds on Ubuntu 22.04 (so the glibc build runs on 22.04 and newer) plus a fully static musl build, and `.deb`/`.rpm` packages (the `.deb` is installed and run in CI).
+  - **Windows** builds on `windows-latest` with MSVC and ships as a `.zip`; CI runs the whole test suite there on every push.
   - **macOS** builds on an Apple Silicon runner. The Intel binary is cross-compiled there, because GitHub no longer offers Intel Mac runners.
   - Each binary is started with `--version` where the runner can execute it, then packaged with a checksum and attached to a GitHub Release. Tags with `-alpha` or `-beta` are marked as prereleases.
 - **apt and dnf repositories:** `scripts/publish-repos.sh` rebuilds both pools and their signed metadata from every release and pushes the site plus repository to the `gh-pages` branch, which GitHub Pages serves. The signing key stays on the maintainer's machine; only the public key is published.

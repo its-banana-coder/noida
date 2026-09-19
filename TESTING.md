@@ -1,6 +1,6 @@
 # Smoke-test checklist
 
-Run this before tagging a release, on at least one Linux terminal and, when possible, one macOS terminal. It takes about 15 minutes. Unit tests (`cargo test`) cover parsing and editing logic; this list covers what only a real terminal shows.
+Run this before tagging a release, on at least one Linux terminal and, when possible, one macOS terminal and Windows Terminal. It takes about 15 minutes. Unit tests (`cargo test`) cover parsing and editing logic; this list covers what only a real terminal shows.
 
 **Setup:** a scratch git repo with a few source files and one commit, `claude` and `codex` on `PATH`, and a language server for the repo's language (e.g. `rustup component add rust-analyzer rustfmt`). Start with `noida <repo> --fresh`.
 
@@ -46,6 +46,7 @@ Note the terminal and OS at the top of your report, e.g. *"Ghostty 1.2 on macOS 
 ## 6. Keys and terminal
 - [ ] `Alt` shortcuts work, and `Ctrl+]` then a key works as the fallback
 - [ ] On macOS: with Option-as-Meta enabled, `⌥x` opens the palette
+- [ ] On Windows Terminal: the agent pane resizes with the window, `Alt` shortcuts work, and a `file:line` from Claude opens the file
 - [ ] In a kitty-protocol terminal, `Ctrl+Shift+P` opens the palette
 - [ ] A custom `keys` entry in `settings.json` works; a bad one is reported at startup
 - [ ] **Preferences: Toggle Dark/Light Theme** switches both UI and syntax colors
