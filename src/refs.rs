@@ -279,9 +279,16 @@ pub fn split_line_suffix(input: &str) -> (&str, Option<usize>) {
 }
 
 pub fn relative<'a>(root: &Path, path: &'a Path) -> std::borrow::Cow<'a, str> {
-    match path.strip_prefix(root) {
+    let rel = match path.strip_prefix(root) {
         Ok(rel) => rel.to_string_lossy(),
         Err(_) => path.to_string_lossy(),
+    };
+    // Agents write `src/main.rs` on every platform, and so does the file index
+    // that resolves what they write, so Windows separators are normalised here,
+    // at the one point both sides pass through.
+    match cfg!(windows) && rel.contains('\\') {
+        true => std::borrow::Cow::Owned(rel.replace('\\', "/")),
+        false => rel,
     }
 }
 

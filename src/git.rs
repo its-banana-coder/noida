@@ -534,6 +534,9 @@ mod tests {
         run(&["init", "-q", "-b", "main"]);
         run(&["config", "user.email", "t@t"]);
         run(&["config", "user.name", "t"]);
+        // Git for Windows rewrites line endings on checkout by default, which
+        // would make these fixtures come back as CRLF.
+        run(&["config", "core.autocrlf", "false"]);
         std::fs::write(dir.0.join("a.txt"), "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n").unwrap();
         run(&["add", "."]);
         run(&["commit", "-q", "-m", "init"]);
@@ -562,16 +565,16 @@ mod tests {
 
     #[test]
     fn status_diff_stage_revert() {
-        let (dir, repo) = repo();
-        std::fs::write(dir.0.join("a.txt"), "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n").unwrap();
-        std::fs::write(dir.0.join("new.txt"), "hello\n").unwrap();
+        let (_dir, repo) = repo();
+        std::fs::write(repo.root.join("a.txt"), "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n").unwrap();
+        std::fs::write(repo.root.join("new.txt"), "hello\n").unwrap();
 
         let st = repo.status().unwrap();
         assert_eq!(st.branch.as_deref(), Some("main"));
-        assert_eq!(st.files[&dir.0.join("a.txt")], FileState::Modified);
-        assert_eq!(st.files[&dir.0.join("new.txt")], FileState::Untracked);
+        assert_eq!(st.files[&repo.root.join("a.txt")], FileState::Modified);
+        assert_eq!(st.files[&repo.root.join("new.txt")], FileState::Untracked);
 
-        let marks = repo.line_marks(&dir.0.join("a.txt"));
+        let marks = repo.line_marks(&repo.root.join("a.txt"));
         assert_eq!(marks.get(&0), Some(&LineMark::Modified));
         assert_eq!(marks.get(&9), Some(&LineMark::Modified));
 
@@ -583,12 +586,12 @@ mod tests {
         // Accept first hunk, reject second.
         repo.apply_hunk(a, 0, HunkOp::Stage).unwrap();
         repo.apply_hunk(a, 1, HunkOp::Revert).unwrap();
-        let text = std::fs::read_to_string(dir.0.join("a.txt")).unwrap();
+        let text = std::fs::read_to_string(repo.root.join("a.txt")).unwrap();
         assert!(text.starts_with("ONE\n") && text.ends_with("ten\n"));
-        assert_eq!(repo.status().unwrap().files[&dir.0.join("a.txt")], FileState::Staged);
+        assert_eq!(repo.status().unwrap().files[&repo.root.join("a.txt")], FileState::Staged);
 
         repo.revert_file(&diff[1]).unwrap();
-        assert!(!dir.0.join("new.txt").exists());
+        assert!(!repo.root.join("new.txt").exists());
     }
 
     fn git(dir: &Path, args: &[&str]) {
@@ -597,9 +600,9 @@ mod tests {
 
     #[test]
     fn staged_diff_unstage_roundtrip() {
-        let (dir, repo) = repo();
-        std::fs::write(dir.0.join("a.txt"), "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n").unwrap();
-        std::fs::write(dir.0.join("new.txt"), "hello\n").unwrap();
+        let (_dir, repo) = repo();
+        std::fs::write(repo.root.join("a.txt"), "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nTEN\n").unwrap();
+        std::fs::write(repo.root.join("new.txt"), "hello\n").unwrap();
         repo.stage_all().unwrap();
         assert!(repo.diff().unwrap().is_empty());
 
@@ -615,11 +618,11 @@ mod tests {
         assert_eq!((unstaged[0].path.as_str(), unstaged[0].hunks.len()), ("a.txt", 1));
         assert!(unstaged[0].hunks[0].lines.contains(&"+TEN".to_string()));
         // The working tree is untouched.
-        assert!(std::fs::read_to_string(dir.0.join("a.txt")).unwrap().ends_with("TEN\n"));
+        assert!(std::fs::read_to_string(repo.root.join("a.txt")).unwrap().ends_with("TEN\n"));
 
         // Unstaging the new file's only hunk makes it untracked again; whole-file unstage clears the rest.
         repo.apply_hunk(&staged_now[1], 0, HunkOp::Unstage).unwrap();
-        assert_eq!(repo.status().unwrap().files[&dir.0.join("new.txt")], FileState::Untracked);
+        assert_eq!(repo.status().unwrap().files[&repo.root.join("new.txt")], FileState::Untracked);
         repo.unstage_file("a.txt").unwrap();
         assert!(repo.diff_staged().unwrap().is_empty());
         assert_eq!(repo.diff().unwrap()[0].hunks.len(), 2);
@@ -639,8 +642,8 @@ mod tests {
     #[test]
     fn log_show_and_file_history() {
         let (dir, repo) = repo();
-        std::fs::write(dir.0.join("a.txt"), "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n").unwrap();
-        std::fs::write(dir.0.join("b.txt"), "b\n").unwrap();
+        std::fs::write(repo.root.join("a.txt"), "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n").unwrap();
+        std::fs::write(repo.root.join("b.txt"), "b\n").unwrap();
         git(&dir.0, &["add", "."]);
         git(&dir.0, &["commit", "-q", "-m", "shout\n\nlonger body"]);
         git(&dir.0, &["mv", "a.txt", "renamed.txt"]);
@@ -672,7 +675,7 @@ mod tests {
 
     #[test]
     fn worktree_roundtrip() {
-        let (dir, repo) = repo();
+        let (_dir, repo) = repo();
         let (path, branch) = repo.add_worktree("Fix Auth!").unwrap();
         assert_eq!(branch, "noida/fix-auth");
         std::fs::write(path.join("a.txt"), "changed\n").unwrap();
@@ -684,7 +687,7 @@ mod tests {
         assert_eq!(wt.numstat(&base, Some(&["b.txt".to_string()])).unwrap().len(), 1);
         assert!(wt.numstat(&base, Some(&[])).unwrap().is_empty());
         assert_eq!(repo.apply_worktree(&wt).unwrap(), 2);
-        assert_eq!(std::fs::read_to_string(dir.0.join("b.txt")).unwrap(), "new\n");
+        assert_eq!(std::fs::read_to_string(repo.root.join("b.txt")).unwrap(), "new\n");
         repo.remove_worktree(&path, &branch).unwrap();
         assert!(!path.exists());
     }
