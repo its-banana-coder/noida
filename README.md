@@ -97,7 +97,13 @@ cargo install noida                                        # from crates.io
 cargo install --git https://github.com/its-banana-coder/noida   # or the latest commit
 ```
 
-**Windows:** run NOIDA inside [WSL](https://learn.microsoft.com/windows/wsl/install) and install the `.deb` above. A native Windows build isn't supported yet, because NOIDA's agent integration uses Unix sockets.
+**Windows:** a native build now compiles and passes the full test suite on `windows-latest`, and `noida-x86_64-pc-windows-msvc.zip` ships with the next release. Until then, build it yourself in PowerShell (needs Rust and the MSVC build tools):
+
+```powershell
+cargo install --git https://github.com/its-banana-coder/noida
+```
+
+The agent hooks use a loopback socket there instead of a Unix socket, and `claude`/`codex` are started through their npm `.cmd` shims. Nobody has driven the TUI on a real Windows machine yet, so [WSL](https://learn.microsoft.com/windows/wsl/install) with the `.deb` above is still the route I'd trust for now.
 
 | Download | For | Checked |
 |---|---|---|
@@ -107,6 +113,7 @@ cargo install --git https://github.com/its-banana-coder/noida   # or the latest 
 | dnf repository / `noida.x86_64.rpm` | Fedora, RHEL, openSUSE (x86_64) | ⚠️ built and signed in CI; not yet installed on a real Fedora machine |
 | `noida-x86_64-unknown-linux-musl.tar.gz` | Any Linux x86_64 (static) | ✅ runs on Ubuntu 22.04 |
 | `noida-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64, glibc 2.35+ | ✅ runs on Ubuntu 22.04 |
+| `noida-x86_64-pc-windows-msvc.zip` | Windows 10/11 (x86_64) | ⚠️ builds and passes all tests in CI; never run on a real Windows machine |
 | `cargo install noida` | Any platform with Rust | ✅ installed from crates.io |
 
 Every download has a `.sha256` checksum beside it (`shasum -a 256 -c noida-*.sha256`).
@@ -331,7 +338,7 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**: a li
 - [x] **Sessions like VS Code:** new session button, conversation-named tabs, rename, browsing past conversations
 - [x] **Hardening:** CI on Linux and macOS, [latest release](https://github.com/its-banana-coder/noida/releases) with prebuilt binaries, issue templates, [smoke-test checklist](TESTING.md), [website](https://its-banana-coder.github.io/noida/)
 - [x] **Language servers verified:** rust-analyzer, TypeScript 7 (built-in server), Pyright
-- [x] **Easy install:** [crates.io](https://crates.io/crates/noida), Homebrew tap for macOS, `.deb` and `.rpm` packages, static Linux binary
+- [x] **Easy install:** [crates.io](https://crates.io/crates/noida), Homebrew tap for macOS, signed apt and dnf repositories, static Linux binary, native Windows build
 
 ### 🔨 Next
 - [ ] Hands-on macOS testing (iTerm2, Ghostty, Terminal.app), including the Intel binary; help wanted, see [TESTING.md](TESTING.md)
