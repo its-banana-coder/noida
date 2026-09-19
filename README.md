@@ -11,13 +11,19 @@
 [![crates.io](https://img.shields.io/crates/v/noida?logo=rust&color=b7410e)](https://crates.io/crates/noida)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-b7410e?logo=rust)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20WSL2-555)](#-project-status)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20WSL2-555)](#-project-status)
 [![Works with Claude Code](https://img.shields.io/badge/works%20with-Claude%20Code-d97757)](https://docs.claude.com/en/docs/claude-code)
 [![Works with Codex](https://img.shields.io/badge/works%20with-Codex%20CLI-10a37f)](https://github.com/openai/codex)
 
 [Website](https://its-banana-coder.github.io/noida/) · [Install](#-install) · [Features](#-features) · [Keys](#%EF%B8%8F-keybindings) · [Roadmap](#%EF%B8%8F-roadmap) · [Status](#-project-status) · [Feedback](#-feedback)
 
 </div>
+
+<p align="center">
+  <img src="docs/demo.gif" alt="Claude Code answers with src/refs.rs:281; Alt+j labels the reference and the editor opens that file at that line" width="100%">
+  <br>
+  <sub>Ask Claude where something lives · <kbd>Alt+j</kbd> labels the answer's file references · the editor opens it at that line.<br>An unedited recording of a real session, made by <a href="scripts/record-demo.py">scripts/record-demo.py</a>.</sub>
+</p>
 
 <p align="center">
   <img src="docs/screenshot.png" alt="NOIDA: file tree, editor with syntax highlighting, and Claude Code running side by side" width="100%">
