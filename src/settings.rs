@@ -25,6 +25,11 @@ pub struct Settings {
     /// How to run this project's tests, when the manifest is not enough
     /// (e.g. "just test", "cargo nextest run"). Empty means: work it out.
     pub test_command: Option<String>,
+    /// Show the menu bar across the top, VS Code style. F10 opens it and
+    /// switches it on for the session.
+    pub menu_bar: bool,
+    /// How to start this project (e.g. "just dev"). Offered first in Run.
+    pub run_command: Option<String>,
     /// Modal (Vim) editing: normal, insert and visual modes.
     pub vim: bool,
     /// Language servers by file extension, e.g. {"sql": "sqls"}. NOIDA has
@@ -48,6 +53,8 @@ impl Default for Settings {
             keys: HashMap::new(),
             test_command: None,
             vim: false,
+            run_command: None,
+            menu_bar: false,
             lsp: HashMap::new(),
         }
     }

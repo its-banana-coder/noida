@@ -14,7 +14,11 @@ use crate::theme;
 impl App {
     pub fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
-        let [main, status] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+        // The menu bar takes the top row only when it is switched on, so the
+        // default layout is unchanged for people who never want it.
+        let menu_h = if self.settings.menu_bar { 1 } else { 0 };
+        let [menu_area, main, status] =
+            Layout::vertical([Constraint::Length(menu_h), Constraint::Fill(1), Constraint::Length(1)]).areas(area);
         f.buffer_mut().set_style(area, Style::default().bg(theme::BG()).fg(theme::FG()));
 
         let (show_tree, show_editor, show_agent) = if self.zoom {
@@ -104,6 +108,16 @@ impl App {
 
         self.render_popup(buf, self.rects.editor, self.last_cursor);
         self.draw_status(buf, status);
+
+        // Drawn last: an open menu covers whatever is under it.
+        if self.settings.menu_bar {
+            let menus = super::menu::menus();
+            self.menu.render(&menus, menu_area, buf);
+            if self.menu.open.is_some() {
+                self.menu.render_dropdown(&menus, area, buf);
+                cursor = None;
+            }
+        }
 
         if let Mode::Picker(p) = &self.mode {
             cursor = Some(p.render(area, buf));

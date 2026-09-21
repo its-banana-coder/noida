@@ -56,7 +56,9 @@ impl Ask {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    ToggleMenuBar,
     RunTests,
+    RunProject,
     CommandPalette,
     QuickOpen,
     GoToLine,
@@ -212,7 +214,9 @@ const IDS: &[(Action, &str)] = &[
     (Action::FocusAgent, "focus_agent"),
     (Action::SendSelection, "send_selection"),
     (Action::SendFile, "send_file"),
+    (Action::ToggleMenuBar, "toggle_menu_bar"),
     (Action::RunTests, "run_tests"),
+    (Action::RunProject, "run_project"),
     (Action::Ask(Ask::Explain), "ask_explain"),
     (Action::Ask(Ask::Refactor), "ask_refactor"),
     (Action::Ask(Ask::FindBugs), "ask_find_bugs"),
@@ -296,7 +300,9 @@ impl Action {
     pub fn describe(self) -> Option<(String, &'static str)> {
         let s = |l: &str, k: &'static str| Some((l.to_string(), k));
         match self {
+            Action::ToggleMenuBar => s("View: Show Menu Bar", "F10"),
             Action::RunTests => s("Test: Run Project Tests", "Alt+u"),
+            Action::RunProject => s("Run: Start the Project…", "F5"),
             Action::CommandPalette => s("Command Palette", "Alt+x"),
             Action::QuickOpen => s("Open File…", "Alt+o"),
             Action::GoToLine => s("Go to Line…", "Ctrl+G"),
@@ -405,7 +411,7 @@ impl Action {
         use Action::*;
         let mut v = vec![
             QuickOpen, SearchWorkspace, ReplaceWorkspace, GoToSymbol, Hover, RenameSymbol, CodeActions, FormatDocument, FormatSelection, OrganizeImports, GoToProjectSymbol, GoToDefinition, FindReferences, Problems, FixProblem,
-            RunTests, ReviewChanges, AcceptAllChanges, SwitchBranch, NewBranch, Commit, GitLog, FileHistory,
+            RunTests, RunProject, ToggleMenuBar, ReviewChanges, AcceptAllChanges, SwitchBranch, NewBranch, Commit, GitLog, FileHistory,
             Sessions, BrowseHistory, RenameAgent, AgentActivity, AgentHistory, AgentChanges, CompareAgents, RunInBoth, ToggleShareContext, AskMenu, SendSelection, SendFile, SendSymbol,
         ];
         v.extend(self::Ask::ALL.map(Action::Ask));

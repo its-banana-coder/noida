@@ -7,6 +7,7 @@ mod findbar;
 mod groups;
 mod lsp_ui;
 mod search;
+mod menu;
 mod views;
 
 pub use search::SearchResults;
@@ -197,6 +198,7 @@ pub struct App {
     tx: Sender<Bg>,
     /// Modal editing state, when `"vim": true`.
     vim: vim::Vim,
+    menu: menu::MenuBar,
     /// Identifies the newest test run, so a replaced run's late output is ignored.
     test_run: u64,
     file_index: Arc<FileIndex>,
@@ -322,6 +324,7 @@ impl App {
             host_out: Vec::new(),
             tx,
             vim: vim::Vim::new(4),
+            menu: menu::MenuBar::default(),
             test_run: 0,
             root,
         };
@@ -741,6 +744,51 @@ impl App {
     /// Runs in the focused agent's worktree when it has one, so an agent
     /// working in isolation is tested against its own changes rather than
     /// against the main checkout.
+    /// Start the project, in a real terminal tab.
+    ///
+    /// Running an app needs a terminal, not a log pane: it wants colour, a
+    /// spinner that redraws, Ctrl+C, and sometimes a prompt. NOIDA already has
+    /// exactly that for agents, so a run is just another tab.
+    fn run_project(&mut self) {
+        let configured = self.settings.run_command.clone();
+        let tasks = crate::testing::tasks(&self.root, configured.as_deref());
+        match tasks.len() {
+            0 => self.error("nothing to run here — set \"run_command\" in settings.json"),
+            1 => self.start_run(&tasks[0].command),
+            _ => {
+                let items: Vec<Item> = tasks
+                    .iter()
+                    .map(|t| Item {
+                        label: t.label.clone(),
+                        detail: String::new(),
+                        hint: String::new(),
+                        target: Target::Run(t.command.clone()),
+                    })
+                    .collect();
+                let p = Picker::new("Run", Kind::Static, items);
+                self.mode = Mode::Picker(p);
+            }
+        }
+    }
+
+    /// Give the command its own tab, reusing one from a previous run.
+    fn start_run(&mut self, command: &str) {
+        let root = self.root.clone();
+        let existing = self.agents.iter().position(|a| a.name == "run");
+        let idx = match existing {
+            Some(i) => {
+                let a = &mut self.agents[i];
+                a.kill();
+                a.reset();
+                *a = Agent::new(a.id, "run", command, root);
+                i
+            }
+            None => self.push_agent("run", command, root),
+        };
+        self.show_agent(idx);
+        self.info(format!("running: {command}"));
+    }
+
     fn run_tests(&mut self) {
         let configured = self.settings.test_command.clone();
         let Some(runner) = crate::testing::Runner::detect(&self.root, configured.as_deref()) else {
@@ -978,6 +1026,20 @@ impl App {
 
     fn on_key(&mut self, key: KeyEvent) {
         let key = keys::normalize(key);
+        // An open menu takes the arrows and Enter; everything else closes it,
+        // so the bar never swallows a shortcut.
+        if self.menu.open.is_some() {
+            let menus = menu::menus();
+            match key.code {
+                KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::Enter | KeyCode::Esc => {
+                    if let Some(action) = self.menu.handle_key(&menus, key) {
+                        self.run(action);
+                    }
+                    return;
+                }
+                _ => self.menu.close(),
+            }
+        }
         // Leader key: Ctrl+] then a key acts like Alt+key. Works on macOS
         // terminals where Option types characters instead of sending Alt.
         let is_leader = key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char(']' | '5'));
@@ -1635,6 +1697,28 @@ impl App {
 
         match m.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // The menu bar and its dropdown sit above everything else.
+                if self.settings.menu_bar {
+                    let menus = menu::menus();
+                    if y == 0 {
+                        self.menu.click_title(x);
+                        return;
+                    }
+                    if self.menu.open.is_some() {
+                        match self.menu.click_item(&menus, x, y) {
+                            Some(action) => {
+                                self.run(action);
+                                return;
+                            }
+                            // A click outside the dropdown closes it and is
+                            // not passed on, the way a menu should behave.
+                            None => {
+                                self.menu.close();
+                                return;
+                            }
+                        }
+                    }
+                }
                 self.end_agent_find();
                 for a in &mut self.agents {
                     a.selection = None;
@@ -2077,6 +2161,13 @@ impl App {
                 let idx = self.push_agent(&name, &command, root);
                 self.show_agent(idx);
             }
+            Action::ToggleMenuBar => {
+                if !self.settings.menu_bar {
+                    self.settings.menu_bar = true;
+                }
+                self.menu.toggle();
+            }
+            Action::RunProject => self.run_project(),
             Action::CloseAgent => self.close_agent(),
             Action::RestartAgent => {
                 let idx = self.active_agent();
@@ -2370,6 +2461,7 @@ impl App {
                 self.focus = Focus::Editor;
             }
             Target::Action(a) => self.run(a),
+            Target::Run(cmd) => self.start_run(&cmd),
             Target::Branch(b) => self.git_op(|r| r.switch(&b).map(|_| format!("switched to {b}"))),
             Target::Commit { hash, paths } => {
                 let Some(repo) = self.repo.clone() else { return self.error("not a git repository") };
@@ -2984,6 +3076,9 @@ fn global_binding(keymap: &Keymap, key: KeyEvent) -> Option<Option<Action>> {
     }
     match key.code {
         KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::ALT) && !key.modifiers.contains(KeyModifiers::CONTROL) => global_action(c).map(Some),
+        // F5 runs the project, as it does in every other IDE.
+        KeyCode::F(5) => Some(Some(Action::RunProject)),
+        KeyCode::F(10) => Some(Some(Action::ToggleMenuBar)),
         _ => None,
     }
 }

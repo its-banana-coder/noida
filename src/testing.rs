@@ -86,6 +86,98 @@ fn js_package_manager(root: &Path) -> &'static str {
     }
 }
 
+/// A thing this project can run: a dev server, a binary, a script.
+///
+/// Detected from the manifests that are already there rather than configured,
+/// because the point is to press one key in a repository you just cloned.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Task {
+    pub label: String,
+    pub command: String,
+}
+
+/// Everything worth offering in the run menu, best guess first.
+pub fn tasks(root: &Path, configured: Option<&str>) -> Vec<Task> {
+    let mut out = Vec::new();
+    let has = |name: &str| root.join(name).exists();
+    if let Some(cmd) = configured.map(str::trim).filter(|c| !c.is_empty()) {
+        out.push(Task { label: cmd.to_string(), command: cmd.to_string() });
+    }
+    if has("Cargo.toml") {
+        out.push(Task { label: "cargo run".into(), command: "cargo run".into() });
+    }
+    if has("package.json") {
+        let manifest = std::fs::read_to_string(root.join("package.json")).unwrap_or_default();
+        let pm = js_package_manager(root);
+        // Offer the project's own scripts, in the order people usually want them.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&manifest) {
+            if let Some(scripts) = v["scripts"].as_object() {
+                let mut names: Vec<&String> = scripts.keys().collect();
+                names.sort_by_key(|n| match n.as_str() {
+                    "dev" => 0,
+                    "start" => 1,
+                    "serve" => 2,
+                    "build" => 3,
+                    _ => 4,
+                });
+                for name in names.iter().take(8) {
+                    let run = if *name == "start" { format!("{pm} start") } else { format!("{pm} run {name}") };
+                    out.push(Task { label: run.clone(), command: run });
+                }
+            }
+        }
+    }
+    if has("go.mod") {
+        out.push(Task { label: "go run .".into(), command: "go run .".into() });
+    }
+    for entry in ["main.py", "app.py", "manage.py"] {
+        if has(entry) {
+            let cmd = if entry == "manage.py" { "python manage.py runserver".to_string() } else { format!("python {entry}") };
+            out.push(Task { label: cmd.clone(), command: cmd });
+        }
+    }
+    if has("Makefile") {
+        if let Ok(text) = std::fs::read_to_string(root.join("Makefile")) {
+            for target in make_targets(&text) {
+                out.push(Task { label: format!("make {target}"), command: format!("make {target}") });
+            }
+        }
+    }
+    if has("docker-compose.yml") || has("compose.yaml") || has("docker-compose.yaml") {
+        out.push(Task { label: "docker compose up".into(), command: "docker compose up".into() });
+    }
+    out.dedup_by(|a, b| a.command == b.command);
+    out
+}
+
+/// Targets a Makefile declares, skipping pattern and special rules.
+fn make_targets(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if line.starts_with([' ', '\t', '#']) {
+            continue;
+        }
+        let Some((name, _)) = line.split_once(':') else { continue };
+        let name = name.trim();
+        if name.is_empty() || name.starts_with('.') || name.contains(['%', '$', '=', '/']) || name.split_whitespace().count() != 1 {
+            continue;
+        }
+        if !out.contains(&name.to_string()) {
+            out.push(name.to_string());
+        }
+    }
+    // The ones people actually mean by "run" go first.
+    out.sort_by_key(|t| match t.as_str() {
+        "run" => 0,
+        "dev" => 1,
+        "start" => 2,
+        "serve" => 3,
+        _ => 4,
+    });
+    out.truncate(8);
+    out
+}
+
 /// What a finished run tells us.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Outcome {
@@ -254,6 +346,36 @@ mod tests {
         std::fs::remove_dir_all(&d).ok();
         std::fs::remove_dir_all(&js).ok();
         std::fs::remove_dir_all(&py).ok();
+    }
+
+    #[test]
+    fn finds_the_ways_a_project_can_be_run() {
+        let d = dir();
+        assert!(tasks(&d, None).is_empty(), "nothing to offer in an empty directory");
+
+        std::fs::write(d.join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        assert_eq!(tasks(&d, None)[0].command, "cargo run");
+
+        // A configured command always comes first.
+        assert_eq!(tasks(&d, Some("just dev"))[0].command, "just dev");
+
+        let js = dir();
+        std::fs::write(js.join("package.json"), r#"{"scripts":{"build":"tsc","dev":"vite","test":"vitest"}}"#).unwrap();
+        let t = tasks(&js, None);
+        assert_eq!(t[0].command, "npm run dev", "dev is what people usually want first");
+        assert!(t.iter().any(|t| t.command == "npm run build"));
+
+        let mk = dir();
+        std::fs::write(mk.join("Makefile"), "# comment\n.PHONY: all\nbuild:\n\tcc x.c\nrun: build\n\t./a.out\n%.o: %.c\n").unwrap();
+        let t: Vec<String> = tasks(&mk, None).into_iter().map(|t| t.command).collect();
+        assert_eq!(t.first().map(String::as_str), Some("make run"), "run comes first");
+        assert!(t.contains(&"make build".to_string()));
+        assert!(!t.iter().any(|c| c.contains('%')), "pattern rules are not tasks");
+        assert!(!t.iter().any(|c| c.contains(".PHONY")), "special rules are not tasks");
+
+        for p in [d, js, mk] {
+            std::fs::remove_dir_all(&p).ok();
+        }
     }
 
     #[test]

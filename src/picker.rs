@@ -24,6 +24,8 @@ pub enum Target {
     CodeAction(usize),
     Resume(crate::actions::AgentKind, String),
     Transcript(crate::actions::AgentKind, String, PathBuf, String),
+    /// A command to start in its own terminal tab.
+    Run(String),
 }
 
 #[derive(Clone, Debug)]

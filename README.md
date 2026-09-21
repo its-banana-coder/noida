@@ -188,6 +188,7 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 - **Review changes** (`Alt+r`): **accept** (stage) or **reject** (revert) each hunk, whole files, or everything
 - After a turn, `Alt+r` opens only the files the agent changed
 - **Run the tests** (`Alt+u`) on the agent's changes: `n` walks the failures and `Enter` opens the line that failed
+- **Run the project** (`F5`) in its own terminal tab — `cargo run`, an npm script, a Makefile target, `docker compose up`; pick one when there are several
 - **Staged view** (`s` in review) with unstage by hunk or file
 - **Commit log** and **file history** with read-only commit diffs
 - Switch branch, new branch, commit
@@ -270,6 +271,7 @@ Also on a Mac:
 | `Alt+e` | Ask agent… | `Alt+/` | Search in workspace |
 | `Alt+r` | Review changes | `Alt+a` | Agent activity |
 | `Alt+u` | Run project tests | `n` / `p` (in tests) | Next / previous failure |
+| `F5` | Run the project | `F10` | Menu bar |
 | `Alt+l` / `Alt+k` | Symbols in file / project | `Alt+i` | Problems |
 | `Alt+E` / `Alt+T` | Recent files / reopen closed | `Alt+-` | Go back |
 | `Alt+z` / `Alt+<` / `Alt+>` | Zoom / resize agent pane | `Alt+q` | Quit |
@@ -342,6 +344,8 @@ Add a `keys` map to `~/.config/noida/settings.json` (`Alt+x` → *Preferences: O
 ```json
 {
   "vim": true,
+  "menu_bar": true,
+  "run_command": "just dev",
   "test_command": "cargo nextest run",
   "lsp": { "sql": "sqls", "java": "jdtls -data /tmp/jdtls" },
   "keys": {
@@ -369,7 +373,8 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**: a li
 - [x] **Hardening:** CI on Linux and macOS, [latest release](https://github.com/its-banana-coder/noida/releases) with prebuilt binaries, issue templates, [smoke-test checklist](TESTING.md), [website](https://its-banana-coder.github.io/noida/)
 - [x] **Language servers verified:** rust-analyzer, TypeScript 7 (built-in server), Pyright
 - [x] **Vim mode:** modal editing (`"vim": true`) — motions, operators, counts, registers, visual mode
-- [x] **Test runner:** `Alt+u` runs the project's tests and jumps to failures
+- [x] **Run and test:** `F5` starts the project in a terminal tab, `Alt+u` runs the tests and jumps to failures
+- [x] **Menu bar:** optional VS Code-style menus across the top (`F10`, or `"menu_bar": true`)
 - [x] **Easy install:** [crates.io](https://crates.io/crates/noida), Homebrew tap for macOS, signed apt and dnf repositories, static Linux binary, native Windows build
 
 ### 🔨 Next
