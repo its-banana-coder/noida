@@ -83,6 +83,7 @@ enum View {
     AgentChanges(AgentChangesView),
     Compare(CompareView),
     Transcript(views::TranscriptView),
+    Tests(views::TestView),
 }
 
 #[derive(PartialEq)]
@@ -193,6 +194,8 @@ pub struct App {
     leader: bool,
     shared_context: String,
     tx: Sender<Bg>,
+    /// Identifies the newest test run, so a replaced run's late output is ignored.
+    test_run: u64,
     file_index: Arc<FileIndex>,
     index_built: Option<Instant>,
     index_building: bool,
@@ -315,6 +318,7 @@ impl App {
             quit: false,
             host_out: Vec::new(),
             tx,
+            test_run: 0,
             root,
         };
         app.rebuild_index();
@@ -680,6 +684,25 @@ impl App {
                     }
                 }
             }
+            Bg::TestDone(id, outcome, output) => {
+                // Ignore a run the user has already replaced.
+                if id == self.test_run {
+                    let summary = outcome.summary();
+                    let failed = !outcome.ok;
+                    let root = self.root.clone();
+                    let mut view = self.view.take();
+                    if let Some(View::Tests(v)) = &mut view {
+                        v.finish(outcome, &output, self.resolver(&root));
+                    }
+                    self.view = view;
+                    self.banner = Some(Banner {
+                        text: format!("{} tests: {summary}", if failed { "✗" } else { "✓" }),
+                        error: failed,
+                        at: Instant::now(),
+                        changed: Vec::new(),
+                    });
+                }
+            }
             Bg::Search(r) => {
                 if let Some(View::Search(v)) = &mut self.view {
                     v.on_results(r);
@@ -700,6 +723,26 @@ impl App {
                 Response::Diagnostics | Response::None => {}
             },
         }
+    }
+
+    /// Run the project's tests and show the result.
+    ///
+    /// Runs in the focused agent's worktree when it has one, so an agent
+    /// working in isolation is tested against its own changes rather than
+    /// against the main checkout.
+    fn run_tests(&mut self) {
+        let configured = self.settings.test_command.clone();
+        let Some(runner) = crate::testing::Runner::detect(&self.root, configured.as_deref()) else {
+            return self.error("no test command found — set \"test_command\" in settings.json");
+        };
+        let dir = self
+            .agents
+            .get(self.active_agent())
+            .and_then(|a| a.worktree.as_ref().map(|(p, _)| p.clone()))
+            .unwrap_or_else(|| self.root.clone());
+        self.test_run += 1;
+        self.view = Some(View::Tests(views::TestView::new(format!("Tests · {}", runner.label))));
+        crate::testing::run(self.test_run, runner, dir, self.tx.clone());
     }
 
     fn on_agent_exit(&mut self, id: usize) {
@@ -771,7 +814,8 @@ impl App {
                 self.refresh_git();
                 let n = changed.len();
                 self.banner = Some(Banner {
-                    text: format!("✓ {name} finished — changed {n} file{} — Alt+r review", if n == 1 { "" } else { "s" }),
+                    // The diff says what changed; the tests say whether to trust it.
+                    text: format!("✓ {name} finished — changed {n} file{} — Alt+r review · Alt+u test", if n == 1 { "" } else { "s" }),
                     error: false,
                     at: Instant::now(),
                     changed,
@@ -1016,6 +1060,7 @@ impl App {
     fn view_key(&mut self, key: KeyEvent) {
         let result = match &mut self.view {
             Some(View::Review(v)) => v.handle_key(key),
+            Some(View::Tests(v)) => v.handle_key(key),
             Some(View::Activity(v)) => v.handle_key(key),
             Some(View::Search(v)) => v.handle_key(key),
             Some(View::AgentChanges(v)) => v.handle_key(key),
@@ -1029,6 +1074,7 @@ impl App {
     fn on_view_result(&mut self, result: ViewResult) {
         match result {
             ViewResult::None => {}
+            ViewResult::RerunTests => self.run_tests(),
             ViewResult::Close => {
                 let back = self.return_view.take().filter(|_| matches!(self.view, Some(View::Review(_))));
                 self.view = back;
@@ -1589,6 +1635,10 @@ impl App {
                     self.focus = Focus::Editor;
                     match &mut self.view {
                         Some(View::Review(v)) => v.click(y),
+                        Some(View::Tests(v)) => {
+                            let r = v.click(y);
+                            self.on_view_result(r);
+                        }
                         Some(View::Activity(v)) => {
                             let r = v.click(y);
                             self.on_view_result(r);
@@ -1720,6 +1770,7 @@ impl App {
                         Some(View::AgentChanges(v)) => v.scroll_by(delta),
                         Some(View::Compare(v)) => v.scroll_by(delta),
                         Some(View::Transcript(v)) => v.scroll_by(delta),
+                        Some(View::Tests(v)) => v.scroll_by(delta),
                         None => {
                             let g = group_at.unwrap_or(self.active_group);
                             if let Some(doc) = self.docs.get_mut(self.groups[g].active) {
@@ -1999,6 +2050,7 @@ impl App {
                 self.copy_to_host(&text);
                 self.info(format!("copied {} characters", text.chars().count()));
             }
+            Action::RunTests => self.run_tests(),
             Action::ReviewChanges => {
                 let only = self.banner.as_ref().filter(|b| !b.changed.is_empty()).map(|b| b.changed.clone());
                 self.open_review(only);
@@ -2908,6 +2960,7 @@ fn global_action(c: char) -> Option<Action> {
         '/' => Action::SearchWorkspace,
         'z' => Action::Zoom,
         '-' => Action::GoBack,
+        'u' => Action::RunTests,
         'q' => Action::Quit,
         _ => return None,
     })

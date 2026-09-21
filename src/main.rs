@@ -15,6 +15,7 @@ mod refs;
 mod sessions;
 mod settings;
 mod symbols;
+mod testing;
 mod theme;
 mod tree;
 mod workspace;

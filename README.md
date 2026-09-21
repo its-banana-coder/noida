@@ -187,6 +187,7 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 - Branch and change count, tree markers, gutter change bars
 - **Review changes** (`Alt+r`): **accept** (stage) or **reject** (revert) each hunk, whole files, or everything
 - After a turn, `Alt+r` opens only the files the agent changed
+- **Run the tests** (`Alt+u`) on the agent's changes: `n` walks the failures and `Enter` opens the line that failed
 - **Staged view** (`s` in review) with unstage by hunk or file
 - **Commit log** and **file history** with read-only commit diffs
 - Switch branch, new branch, commit
@@ -268,6 +269,7 @@ Also on a Mac:
 | `Alt+F` | Format document | | |
 | `Alt+e` | Ask agent… | `Alt+/` | Search in workspace |
 | `Alt+r` | Review changes | `Alt+a` | Agent activity |
+| `Alt+u` | Run project tests | `n` / `p` (in tests) | Next / previous failure |
 | `Alt+l` / `Alt+k` | Symbols in file / project | `Alt+i` | Problems |
 | `Alt+E` / `Alt+T` | Recent files / reopen closed | `Alt+-` | Go back |
 | `Alt+z` / `Alt+<` / `Alt+>` | Zoom / resize agent pane | `Alt+q` | Quit |
@@ -323,6 +325,7 @@ Add a `keys` map to `~/.config/noida/settings.json` (`Alt+x` → *Preferences: O
 
 ```json
 {
+  "test_command": "cargo nextest run",
   "keys": {
     "alt+y": "command_palette",
     "f5": "review_changes",

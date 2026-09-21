@@ -22,6 +22,9 @@ pub struct Settings {
     /// Extra Alt shortcuts, e.g. {"alt+y": "command_palette"}. Action ids are
     /// listed by "Help: Keyboard Shortcuts".
     pub keys: HashMap<String, String>,
+    /// How to run this project's tests, when the manifest is not enough
+    /// (e.g. "just test", "cargo nextest run"). Empty means: work it out.
+    pub test_command: Option<String>,
 }
 
 impl Default for Settings {
@@ -36,6 +39,7 @@ impl Default for Settings {
             breadcrumbs: true,
             share_editor_context: true,
             keys: HashMap::new(),
+            test_command: None,
         }
     }
 }

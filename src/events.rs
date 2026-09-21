@@ -8,6 +8,7 @@ use crate::app::SearchResults;
 use crate::refs::FileIndex;
 use crate::sessions::PastSession;
 use crate::symbols::ProjectSymbols;
+use crate::testing::Outcome;
 
 pub enum Bg {
     PtyOutput(usize, Vec<u8>),
@@ -21,4 +22,6 @@ pub enum Bg {
     Symbols(ProjectSymbols),
     Lsp(LspEvent),
     Search(SearchResults),
+    /// A test run finished: (run id, what it found, full output).
+    TestDone(u64, Outcome, String),
 }

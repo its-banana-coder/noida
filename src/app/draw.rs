@@ -146,6 +146,7 @@ impl App {
                 View::AgentChanges(_) => " ✓ Agent Changes ".to_string(),
                 View::Compare(v) => format!(" ⇄ {} ", v.title),
                 View::Transcript(v) => format!(" » {} ", v.title.chars().take(40).collect::<String>()),
+                View::Tests(v) => format!(" ⚑ {} ", v.title),
             };
             x += title.chars().count() as u16 + 1;
             spans.push(Span::styled(title, active_style));
@@ -215,6 +216,10 @@ impl App {
                 return None;
             }
             Some(View::Transcript(v)) => {
+                v.render(area, buf);
+                return None;
+            }
+            Some(View::Tests(v)) => {
                 v.render(area, buf);
                 return None;
             }
@@ -339,12 +344,14 @@ impl App {
                     break;
                 }
                 used += tab_w(i);
-                let _ = a;
                 let label = labels[i].clone();
                 let w = label.chars().count() as u16;
                 self.rects.agent_tabs[slot].push((x, x + w, i));
                 let style = if i == self.slots[slot] {
                     Style::default().fg(theme::HINT_FG()).bg(theme::BORDER_FOCUS()).add_modifier(Modifier::BOLD)
+                } else if a.state().needs_human() {
+                    // A background agent that is blocked should not look idle.
+                    Style::default().fg(theme::ERROR())
                 } else {
                     Style::default().fg(theme::DIM())
                 };
@@ -436,6 +443,7 @@ impl App {
                         (Focus::Editor, Some(View::AgentChanges(v))) => v.status().into(),
                         (Focus::Editor, Some(View::Compare(v))) => v.status().into(),
                         (Focus::Editor, Some(View::Transcript(v))) => v.status().into(),
+                        (Focus::Editor, Some(View::Tests(v))) => v.status().into(),
                         (Focus::Tree, _) => "↑↓ move  ⏎ open  ← collapse  R refresh  │  Alt+x commands  Alt+o files  Alt+g sessions  Alt+q quit".into(),
                         (Focus::Editor, None) => "^S save  ^F find  F12 definition  Alt+l symbols  │  Alt+s send  Alt+e ask  Alt+r review  Alt+x commands".into(),
                         (Focus::Agent, _) => "Alt+j jump to ref  Alt+? find  drag to copy  Alt+g sessions  Alt+n next  Alt+v split  │  Alt+r review  Alt+x commands".into(),

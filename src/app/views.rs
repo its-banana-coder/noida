@@ -25,6 +25,8 @@ pub enum ViewResult {
     ReviewTurn(usize),
     /// Resume a past conversation in a new agent tab.
     Resume(crate::actions::AgentKind, String),
+    /// Run the project's tests again.
+    RerunTests,
     /// Review the unstaged diff of `files` (repo-relative) in the repo at `root`.
     Review { root: PathBuf, title: String, files: Vec<String> },
     ToggleReviewed { agent: String, path: String, version: crate::changes::Version, reviewed: bool },
@@ -602,6 +604,179 @@ impl TranscriptView {
                 }
                 x = buf.set_stringn(x, y, text, (end - x) as usize, *style).0;
             }
+        }
+    }
+}
+
+// ----------------------------------------------------------------- tests --
+
+/// First `path` or `path:line` in a line of test output that resolves to a
+/// real file. Runners quote paths in all sorts of ways (`at`, `-->`, commas,
+/// parentheses), so each token is trimmed of punctuation before asking.
+fn locate(line: &str, resolver: &mut crate::refs::Resolver) -> Option<(PathBuf, usize)> {
+    for token in line.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '"' || c == '\'') {
+        let token = token.trim_matches(|c: char| c == ',' || c == ';' || c == ':' && false);
+        if token.len() < 3 || !token.contains(['/', '\\', '.']) {
+            continue;
+        }
+        let (path, at) = crate::refs::split_line_suffix(token);
+        // "file.rs:12:5" -> strip the column, then the line.
+        let (path, at) = match (at, crate::refs::split_line_suffix(path)) {
+            (Some(col), (p, Some(l))) if p.contains('.') => (p, Some(l.max(1)).map(|l| { let _ = col; l })),
+            _ => (path, at),
+        };
+        if let Some(hit) = resolver.resolve(path) {
+            return Some((hit.path, at.unwrap_or(1)));
+        }
+    }
+    None
+}
+
+/// A test run: its output, and a way to get from a failure to the code.
+///
+/// Test output is mostly noise with a few lines that matter, so failures are
+/// highlighted and every `file:line` the resolver recognises becomes a jump
+/// target. `n` walks the failures directly, which is the reason to open this
+/// view at all.
+pub struct TestView {
+    pub title: String,
+    pub running: bool,
+    pub outcome: Option<crate::testing::Outcome>,
+    /// (text, style, jump target)
+    rows: Vec<(String, Style, Option<(PathBuf, usize)>)>,
+    failures: Vec<usize>,
+    selected: usize,
+    scroll: usize,
+    height: usize,
+    area: Rect,
+}
+
+impl TestView {
+    pub fn new(title: String) -> Self {
+        Self {
+            title,
+            running: true,
+            outcome: None,
+            rows: vec![("Running…".into(), Style::default().fg(theme::DIM()), None)],
+            failures: Vec::new(),
+            selected: 0,
+            scroll: 0,
+            height: 20,
+            area: Rect::default(),
+        }
+    }
+
+    /// Fill in the finished run, resolving references as we go.
+    pub fn finish(&mut self, outcome: crate::testing::Outcome, output: &str, resolver: &mut crate::refs::Resolver) {
+        self.running = false;
+        self.rows.clear();
+        self.failures.clear();
+        let names = &outcome.failures;
+        for line in output.lines() {
+            let trimmed = line.trim_end();
+            // The resolver already knows how to turn agent output into
+            // locations; a stack trace is the same problem.
+            let target = locate(trimmed, resolver);
+            let failing = names.iter().any(|n| trimmed.contains(n.as_str()))
+                || trimmed.starts_with("FAILED")
+                || trimmed.contains("--- FAIL")
+                || trimmed.starts_with("error[")
+                || trimmed.starts_with("E   ");
+            let style = if failing {
+                Style::default().fg(theme::ERROR())
+            } else if target.is_some() {
+                Style::default().fg(theme::LINK())
+            } else {
+                Style::default().fg(theme::FG())
+            };
+            if failing {
+                self.failures.push(self.rows.len());
+            }
+            self.rows.push((trimmed.to_string(), style, target));
+        }
+        if self.rows.is_empty() {
+            self.rows.push(("(no output)".into(), Style::default().fg(theme::DIM()), None));
+        }
+        // Land on the first failure: that is what the run was for.
+        self.selected = self.failures.first().copied().unwrap_or(0);
+        self.scroll = self.selected.saturating_sub(self.height / 3);
+        self.outcome = Some(outcome);
+    }
+
+    fn jump_failure(&mut self, forward: bool) {
+        if self.failures.is_empty() {
+            return;
+        }
+        let next = if forward {
+            self.failures.iter().find(|&&r| r > self.selected).copied().or_else(|| self.failures.first().copied())
+        } else {
+            self.failures.iter().rev().find(|&&r| r < self.selected).copied().or_else(|| self.failures.last().copied())
+        };
+        if let Some(r) = next {
+            self.selected = r;
+        }
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> ViewResult {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => return ViewResult::Close,
+            KeyCode::Down | KeyCode::Char('j') => self.selected = (self.selected + 1).min(self.rows.len().saturating_sub(1)),
+            KeyCode::Up | KeyCode::Char('k') => self.selected = self.selected.saturating_sub(1),
+            KeyCode::PageDown => self.selected = (self.selected + self.height).min(self.rows.len().saturating_sub(1)),
+            KeyCode::PageUp => self.selected = self.selected.saturating_sub(self.height),
+            KeyCode::Char('n') => self.jump_failure(true),
+            KeyCode::Char('p') => self.jump_failure(false),
+            KeyCode::Char('r') => return ViewResult::RerunTests,
+            KeyCode::Enter => {
+                if let Some((_, _, Some((path, line)))) = self.rows.get(self.selected) {
+                    return ViewResult::Open(path.clone(), *line);
+                }
+            }
+            _ => {}
+        }
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + self.height {
+            self.scroll = self.selected + 1 - self.height;
+        }
+        ViewResult::None
+    }
+
+    pub fn scroll_by(&mut self, delta: isize) {
+        self.scroll = (self.scroll as isize + delta).clamp(0, self.rows.len().saturating_sub(1) as isize) as usize;
+    }
+
+    pub fn click(&mut self, y: u16) -> ViewResult {
+        let row = self.scroll + y.saturating_sub(self.area.y) as usize;
+        if row < self.rows.len() {
+            let again = row == self.selected;
+            self.selected = row;
+            if again {
+                return self.handle_key(KeyEvent::from(KeyCode::Enter));
+            }
+        }
+        ViewResult::None
+    }
+
+    pub fn status(&self) -> String {
+        match (&self.outcome, self.failures.len()) {
+            (None, _) => "running…  ·  Esc close".into(),
+            (Some(o), 0) => format!("{}  ·  r re-run · Esc close", o.summary()),
+            (Some(o), n) => format!("{}  ·  n/p failure ({n})  · Enter open · r re-run · Esc close", o.summary()),
+        }
+    }
+
+    pub fn render(&mut self, area: Rect, buf: &mut Buffer) {
+        self.area = area;
+        self.height = area.height as usize;
+        for (i, (text, style, _)) in self.rows.iter().enumerate().skip(self.scroll).take(self.height) {
+            let y = area.y + (i - self.scroll) as u16;
+            let mut style = *style;
+            if i == self.selected {
+                style = style.bg(theme::SELECT());
+                buf.set_style(Rect::new(area.x, y, area.width, 1), Style::default().bg(theme::SELECT()));
+            }
+            buf.set_stringn(area.x + 1, y, text, area.width.saturating_sub(1) as usize, style);
         }
     }
 }
