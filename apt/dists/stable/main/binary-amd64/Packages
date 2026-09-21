@@ -1,0 +1,80 @@
+Package: noida
+Version: 0.1.2-1
+Architecture: amd64
+Maintainer: its-banana-coder <noreply@github.com>
+Installed-Size: 12642
+Depends: libc6 (>= 2.34)
+Filename: pool/main/n/noida/noida_0.1.2-alpha_amd64.deb
+Size: 3105380
+MD5sum: a2156fcec9d94d4a3e67b08dce15b432
+SHA1: 0e5e19c7ce4c42ad7716190f147db18d447dec93
+SHA256: ea4f3201f35893879da8b93157f544fd36b032d67c44dc909ab2732e20d4b8a0
+Section: devel
+Priority: optional
+Homepage: https://github.com/its-banana-coder/noida
+Description: Navigation-Oriented IDE for Developer Agents: a terminal IDE with clickable
+ file references from Claude Code / Codex
+ NOIDA runs Claude Code, Codex or a shell in a real terminal pane next to a
+ file tree, editor, git review and language-server features. Every file:line
+ an agent prints is clickable.
+
+Package: noida
+Version: 0.1.3-1
+Architecture: amd64
+Maintainer: its-banana-coder <noreply@github.com>
+Installed-Size: 12456
+Depends: libc6 (>= 2.34)
+Filename: pool/main/n/noida/noida_0.1.3-alpha_amd64.deb
+Size: 3073816
+MD5sum: fb06d67d88ea19b07cc60adacaab7f48
+SHA1: 0676bee5e1a5efae09b158d4642a9d66dae69e7f
+SHA256: 71dc3254e60d5a1a6c9a05bbaaab5dd8c5677ea1210b136ca811380eb866970c
+Section: devel
+Priority: optional
+Homepage: https://github.com/its-banana-coder/noida
+Description: Navigation-Oriented IDE for Developer Agents: a terminal IDE with clickable
+ file references from Claude Code / Codex
+ NOIDA runs Claude Code, Codex or a shell in a real terminal pane next to a
+ file tree, editor, git review and language-server features. Every file:line
+ an agent prints is clickable.
+
+Package: noida
+Version: 0.1.4-1
+Architecture: amd64
+Maintainer: its-banana-coder <noreply@github.com>
+Installed-Size: 12456
+Depends: libc6 (>= 2.34)
+Filename: pool/main/n/noida/noida_0.1.4-alpha_amd64.deb
+Size: 3073612
+MD5sum: eba9e42550cf749a5d006e3226df50fe
+SHA1: 422cbd5f0ecd6edc72b495cb31c10d9714ea26ec
+SHA256: 43837375a066257bb7dc92d9414a2688efb6fd06f22552e0b2d59f6f9e924a60
+Section: devel
+Priority: optional
+Homepage: https://github.com/its-banana-coder/noida
+Description: Navigation-Oriented IDE for Developer Agents: a terminal IDE with clickable
+ file references from Claude Code / Codex
+ NOIDA runs Claude Code, Codex or a shell in a real terminal pane next to a
+ file tree, editor, git review and language-server features. Every file:line
+ an agent prints is clickable.
+
+Package: noida
+Version: 0.1.5-1
+Architecture: amd64
+Maintainer: its-banana-coder <noreply@github.com>
+Installed-Size: 12581
+Depends: libc6 (>= 2.34)
+Filename: pool/main/n/noida/noida_0.1.5-alpha_amd64.deb
+Size: 3115952
+MD5sum: cc9abde4d9ce032402fdbd8f3aba23a2
+SHA1: 5555d73f1d247983ec977d3bf33fdb52d90e16d9
+SHA256: 17533c42bf565ded24900c046f40f685a9d8dc97b7964f3df1465930a2ba510b
+Section: devel
+Priority: optional
+Homepage: https://github.com/its-banana-coder/noida
+Description: Navigation-Oriented IDE for Developer Agents: a terminal IDE with clickable
+ file references from Claude Code / Codex
+ NOIDA runs Claude Code, Codex or a shell in a real terminal pane next to a
+ file tree, editor, git review and language-server features. Every file:line
+ an agent prints is clickable.
+

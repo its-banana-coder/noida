@@ -1,0 +1,32 @@
+Architectures: amd64 arm64
+Codename: stable
+Components: main
+Date: Mon, 21 Sep 2026 06:36:56 +0000
+Description: NOIDA: a terminal IDE built around Claude Code and Codex
+Label: NOIDA
+Origin: NOIDA
+Suite: stable
+MD5Sum:
+ 25b448522363140be380357f74f6cef2              210 Release
+ 3b5cd8f5e385e250de7f592d3e97f951             3128 main/binary-amd64/Packages
+ 9227799823e48ec6a44c322b7fb5d775              899 main/binary-amd64/Packages.gz
+ 1d65184eac411210806629c8f1e07d6d             1564 main/binary-arm64/Packages
+ 9dae9d9a4be4e2931d8391990e0d72dd              678 main/binary-arm64/Packages.gz
+SHA1:
+ 6d9991cee158b80a067ca5e3d89d73411450770e              210 Release
+ 712ed359da9b506879aad5f3f4c1c1f0a91d7638             3128 main/binary-amd64/Packages
+ dd23b310976223983bd63b93cf142632f2046854              899 main/binary-amd64/Packages.gz
+ 77c6e1603dad138ea0dcec480d247c1e402ffeaf             1564 main/binary-arm64/Packages
+ 9bd46a2303e8d51a58c4527fbbc049ec8d0c632c              678 main/binary-arm64/Packages.gz
+SHA256:
+ 59cfc389228fb1333a90230a390cc0cf8fa07189b7a64f18f446904d39d0af4c              210 Release
+ 136b32cc4e560b49a4a3521d3c0eb5dc21697c278b22d190c0c1c08e23043dbf             3128 main/binary-amd64/Packages
+ 44d5532dc2be30a2722dc89b8b43deda20b69c1fdca3267c493f976cf51239f3              899 main/binary-amd64/Packages.gz
+ bb22c11a6402675e1ee71b4a8a1a423ee3577352450924281aea5728aef9c5f7             1564 main/binary-arm64/Packages
+ 00f4e8012668de53300afe0d3b9478f25054e8d67039153c6d6ca19a0dc5ce08              678 main/binary-arm64/Packages.gz
+SHA512:
+ 1d6853fd6d37ff5eb3076f743a7ef857733680c1e3489a1647b2aa2989bac5222d19558cb3e858b4aff154038d1185eee7bdf3256e7ae76697cbc76be429cb5e              210 Release
+ 059adeec4f031b5fc05a5e8844d075166823f7ccd7bbbefeb8bd8b9445f1eac04af8dd8f32c0ea8f59682f8f9568739b8462c8a3f83d74d0db1eb2d462a47539             3128 main/binary-amd64/Packages
+ 8d324cfa04b3b4fd678aceb9269569efe6e99cdebbd2fb7cf02d5ab198783186084229c428b633df1b89380cac132d3667f6cca000e823870d8db850db95d363              899 main/binary-amd64/Packages.gz
+ 0ec3c03b3579123d18d627e21dbf1a005517ac97c400dec1167e5e23e23d199787ba47ac35f2647a1509160792060a76d6bb38f1e0d30f81fa58ebd4568e73ee             1564 main/binary-arm64/Packages
+ 23ed08808f06870e18eb08899f8dc07f557bf8e7cb86ce35fc9230077714e5853b0937dfcfef2f570466ce50e78fc3559e5c60a8ea4118d2890a2518fbb50f45              678 main/binary-arm64/Packages.gz
