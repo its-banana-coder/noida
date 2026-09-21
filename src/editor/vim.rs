@@ -34,10 +34,6 @@ impl Mode {
             Mode::VisualLine => "-- VISUAL LINE --",
         }
     }
-
-    pub fn is_insert(self) -> bool {
-        self == Mode::Insert
-    }
 }
 
 /// What the editor should do with a key the Vim layer saw.
@@ -664,7 +660,7 @@ mod tests {
                 c => KeyEvent::from(KeyCode::Char(c)),
             };
             // Insert mode passes typing through to the editor, as the app does.
-            if v.handle(d, key) == VimResult::PassThrough && v.mode.is_insert() {
+            if v.handle(d, key) == VimResult::PassThrough && v.mode == Mode::Insert {
                 d.handle_key(key);
             }
         }
