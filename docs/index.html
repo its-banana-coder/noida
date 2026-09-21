@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NOIDA — a terminal IDE built around your coding agents</title>
-<meta name="description" content="A lightweight replacement for heavy IDEs. File tree, editor, LSP and git review next to your real Claude Code or Codex session. Every file:line the agent prints is clickable.">
+<meta name="description" content="A lightweight replacement for heavy IDEs. Editor with Vim mode, LSP, git review, test running and your real Claude Code or Codex session in one terminal. Every file:line the agent prints is clickable.">
 <meta property="og:title" content="NOIDA — a terminal IDE built around your coding agents">
 <meta property="og:description" content="Every file:line your agent prints is one click from the code. ~20 MB of RAM, in your terminal.">
 <meta property="og:image" content="https://its-banana-coder.github.io/noida/screenshot.png">
@@ -366,18 +366,22 @@
       <div>
         <h3>The editor features you'd miss</h3>
         <ul>
-          <li><strong>Language servers:</strong> go to definition, references, rename across files, hover, quick fixes, format</li>
+          <li><strong>Vim mode:</strong> motions, operators, counts, text objects (<code>ciw</code>, <code>di(</code>), <code>.</code> repeat, visual mode</li>
+          <li><strong>Language servers:</strong> go to definition, references, rename across files, hover, quick fixes, format &mdash; and any language you configure</li>
           <li><strong>Multi-cursor</strong> with <kbd>Ctrl+D</kbd>, column selection, regex find and replace</li>
           <li><strong>Workspace search and replace</strong> with a preview of every change</li>
           <li>Tree-sitter outline, breadcrumbs, sticky scroll, folding, Markdown preview</li>
           <li>File tree operations, fuzzy open, command palette, split editor, tabs</li>
           <li>Git gutter, staged view, commit log and file history, custom keybindings</li>
+          <li>Optional menu bar across the top, if you'd rather point than remember</li>
         </ul>
       </div>
       <div>
         <h3>What an IDE doesn't do</h3>
         <ul>
           <li><strong>Review every hunk</strong> the agent changed, then accept it into git or reject it from disk</li>
+          <li><strong>Run the tests on what it wrote</strong> (<kbd>Alt+u</kbd>): pass and fail counts, and <kbd>Enter</kbd> on a failure opens the line that failed</li>
+          <li><strong>Start the app</strong> (<kbd>F5</kbd>) in a real terminal tab &mdash; cargo, npm scripts, a Makefile target, docker compose</li>
           <li><strong>Know what the agent is doing:</strong> working, finished or waiting for permission, with a timeline of reads, edits and commands</li>
           <li><strong>Share what you're looking at:</strong> the agent is told your open file and selection when you prompt</li>
           <li><strong>Run many sessions, like VS Code:</strong> a new session is one click away, tabs are named after the conversation, and past conversations can be read and resumed</li>
@@ -462,7 +466,18 @@
           <li>CI on Linux and macOS</li>
           <li>Verified with rust-analyzer, TypeScript 7 and Pyright</li>
           <li>Smoke-test checklist for every release</li>
-          <li>Homebrew tap, signed apt and dnf repositories, Windows .zip</li>
+          <li>Homebrew tap, signed apt and dnf repositories, Windows .zip, ARM64 Linux</li>
+        </ul>
+      </li>
+      <li>
+        <h3>Since the first release <span class="when">shipped</span></h3>
+        <ul>
+          <li>Vim mode: text objects, <code>.</code> repeat, visual mode</li>
+          <li><kbd>F5</kbd> run the project, <kbd>Alt+u</kbd> run the tests</li>
+          <li>Optional VS Code-style menu bar</li>
+          <li>Native Windows build and Linux on ARM64</li>
+          <li>One-line install on every platform</li>
+          <li>Language servers configurable per file type</li>
         </ul>
       </li>
       <li class="next">

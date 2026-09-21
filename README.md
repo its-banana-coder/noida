@@ -73,7 +73,7 @@ echo "deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/noida.gpg] https://its-b
 sudo apt update && sudo apt install noida
 ```
 
-After that, `sudo apt upgrade` keeps NOIDA current. If you also ran `cargo install noida`, remove it (`cargo uninstall noida`) so `~/.cargo/bin` doesn't shadow the packaged binary. To install a single `.deb` instead: `curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.4-alpha/noida_amd64.deb && sudo apt install ./noida_amd64.deb`
+After that, `sudo apt upgrade` keeps NOIDA current. If you also ran `cargo install noida`, remove it (`cargo uninstall noida`) so `~/.cargo/bin` doesn't shadow the packaged binary. To install a single `.deb` instead: `curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.5-alpha/noida_amd64.deb && sudo apt install ./noida_amd64.deb`
 
 **Fedora / RHEL / openSUSE (dnf repository, with upgrades)** — add it once:
 
@@ -85,7 +85,7 @@ sudo dnf install noida
 On older releases use `sudo dnf config-manager --add-repo=...`, and on openSUSE `sudo zypper ar https://its-banana-coder.github.io/noida/rpm/noida.repo && sudo zypper in noida`. The repository metadata is GPG-signed with the same key as the apt repository, and `dnf upgrade` keeps NOIDA current. To install a single `.rpm` instead:
 
 ```bash
-curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.4-alpha/noida.x86_64.rpm
+curl -LO https://github.com/its-banana-coder/noida/releases/download/v0.1.5-alpha/noida.x86_64.rpm
 sudo dnf install ./noida.x86_64.rpm      # or: sudo rpm -i noida.x86_64.rpm
 ```
 
@@ -199,6 +199,7 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 ### 🧠 Code intelligence
 - **Tree-sitter** outline, project symbols and structural selection for Rust, TS/TSX, JS, Python, Go and Java
 - **LSP** (rust-analyzer, TypeScript 7's built-in server or typescript-language-server, Pyright/pylsp, gopls): diagnostics, hover, signature help, definition, references, **rename across files**, code actions, format, organize imports
+- **Any other language:** point NOIDA at a server per file type in settings, e.g. `"lsp": {"sql": "sqls"}`
 - No language server? Definitions come from the tree-sitter index and references from project search.
 
 </td>
@@ -207,6 +208,7 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 <td valign="top">
 
 ### ✏️ Editor
+- **Vim mode** (`"vim": true`): motions, operators with counts, text objects (`ciw`, `di(`, `ca"`), `.` repeat, visual and visual-line, `/` search, `:w`/`:q`
 - **Multi-cursor**: `Ctrl+D`, `Alt+click`, `Ctrl+Alt+↑/↓`, column selection
 - **Find/replace** with case, word, regex (`$1`) and in-selection options
 - **Workspace search & replace** (`Alt+/`) with a replacement preview and per-match excludes
@@ -220,7 +222,8 @@ noida --agent aider="aider --no-git" --agent shell=bash   # custom agent tabs
 <td valign="top">
 
 ### 🗂️ Workspace
-- **Command palette** (`Alt+x`) and fuzzy file open (`Alt+o`)
+- **Run the project** (`F5`) in a terminal tab, and **run the tests** (`Alt+u`) with failures linked to the line that failed
+- **Command palette** (`Alt+x`), fuzzy file open (`Alt+o`) and an optional **menu bar** (`F10`)
 - File tree: new, rename/move, delete, copy path, reveal in the file manager
 - **Outline** panel that follows the cursor
 - Files reload automatically when agents edit them

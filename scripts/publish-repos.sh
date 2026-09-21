@@ -2,7 +2,7 @@
 # Publish the website plus APT and RPM repositories to the gh-pages branch.
 #
 #   scripts/publish-repos.sh            # rebuild from every release
-#   scripts/publish-repos.sh v0.1.4-alpha   # ...and make sure this tag is included
+#   scripts/publish-repos.sh v0.1.5-alpha   # ...and make sure this tag is included
 #
 # Needs: gpg with the signing key below, apt-ftparchive (apt-utils),
 # createrepo_c (createrepo-c), gh.
