@@ -75,11 +75,18 @@ pub struct Vim {
     last_find: Option<(char, char)>,
     /// Buffer for `:` and `/` input.
     line: Option<(char, String)>,
+    /// Keys of the command being typed, and of the last one that changed the
+    /// document, so `.` can replay it.
+    typed: Vec<KeyEvent>,
+    last_change: Vec<KeyEvent>,
+    replaying: bool,
+    /// Width of one indent step, for `>>` and `<<`.
+    pub indent_width: usize,
 }
 
 impl Vim {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(indent_width: usize) -> Self {
+        Self { indent_width: indent_width.max(1), ..Self::default() }
     }
 
     /// The text being typed on the `:` or `/` line, for the status bar.
@@ -114,11 +121,58 @@ impl Vim {
         if self.line.is_some() {
             return self.handle_line(key);
         }
-        match self.mode {
+        let was = (self.mode, doc.edit_seq());
+        let result = match self.mode {
             Mode::Insert => self.insert_key(doc, key),
             Mode::Normal => self.normal_key(doc, key),
             Mode::Visual | Mode::VisualLine => self.visual_key(doc, key),
+        };
+        if !self.replaying {
+            self.record(key, was, doc.edit_seq());
         }
+        result
+    }
+
+    /// Remember the keys of the last command that changed the document.
+    ///
+    /// `.` replays keys rather than replaying an edit, which is what makes it
+    /// work for anything -- `ciwfoo<Esc>`, `3dd`, `xp` -- without every command
+    /// having to describe itself.
+    fn record(&mut self, key: KeyEvent, was: (Mode, u64), edits: u64) {
+        let (mode_before, edits_before) = was;
+        self.typed.push(key);
+        let changed = edits != edits_before;
+        match self.mode {
+            // Still typing: an operator waiting for a motion, or insert mode.
+            Mode::Insert => {}
+            Mode::Visual | Mode::VisualLine => {}
+            Mode::Normal => {
+                let finished_insert = mode_before == Mode::Insert;
+                if changed || finished_insert {
+                    self.last_change = std::mem::take(&mut self.typed);
+                } else if self.op.is_none() && self.awaiting.is_none() && self.count.is_empty() {
+                    // Pure movement: not something `.` should repeat.
+                    self.typed.clear();
+                }
+            }
+        }
+    }
+
+    fn repeat(&mut self, doc: &mut Doc) -> VimResult {
+        if self.last_change.is_empty() || self.replaying {
+            return VimResult::Handled;
+        }
+        let keys = self.last_change.clone();
+        self.replaying = true;
+        for k in keys {
+            // Insert-mode keys are applied by the editor, exactly as the app
+            // would when the Vim layer passes them through.
+            if self.handle(doc, k) == VimResult::PassThrough {
+                doc.handle_key(k);
+            }
+        }
+        self.replaying = false;
+        VimResult::Handled
     }
 
     fn handle_line(&mut self, key: KeyEvent) -> VimResult {
@@ -229,6 +283,38 @@ impl Vim {
                 VimResult::Handled
             }
             'x' | 'X' | 's' | 'D' | 'C' | 'Y' | 'p' | 'P' | 'J' | 'u' | 'r' | 'S' => self.simple_edit(doc, c),
+            '.' => self.repeat(doc),
+            // `iw`/`aw` and friends only mean a text object after an operator;
+            // on their own `i` and `a` are insert, handled above.
+            'i' | 'a' if self.op.is_some() => {
+                self.awaiting = Some(c);
+                VimResult::Handled
+            }
+            '>' | '<' => {
+                let n = self.take_count();
+                self.awaiting = Some(c);
+                self.count = n.to_string();
+                VimResult::Handled
+            }
+            '*' | '#' => match doc.word_at_cursor() {
+                Some(word) => VimResult::Search(word, c == '*'),
+                None => VimResult::Handled,
+            },
+            '%' => {
+                let from = doc.head();
+                if let Some(to) = doc.match_bracket(from) {
+                    if self.op.is_some() {
+                        // `d%` is inclusive: it takes the bracket it lands on.
+                        let (s, e) = if from <= to { (from, (to.0, to.1 + 1)) } else { (to, (from.0, from.1 + 1)) };
+                        doc.set_cursor(e);
+                        return self.finish_pending_op(doc, s);
+                    }
+                    doc.set_cursor(to);
+                    return VimResult::Handled;
+                }
+                self.op = None;
+                VimResult::Handled
+            }
             ':' | '/' | '?' => {
                 self.line = Some((c, String::new()));
                 VimResult::Handled
@@ -390,8 +476,75 @@ impl Vim {
                 self.last_find = Some((pending, c));
                 self.find_char(doc, pending, c)
             }
+            'i' | 'a' => self.text_object(doc, pending == 'a', c),
+            '>' | '<' => {
+                // `>>` and `<<` indent whole lines; `>j` takes the lines crossed.
+                let n = self.take_count();
+                let line = doc.head().0;
+                let end = match c {
+                    '>' | '<' => line + n - 1,
+                    'j' => line + n,
+                    'k' => return self.shift(doc, line.saturating_sub(n), line, pending == '>'),
+                    _ => return VimResult::Handled,
+                };
+                self.shift(doc, line, end, pending == '>')
+            }
             _ => VimResult::Handled,
         }
+    }
+
+    fn shift(&mut self, doc: &mut Doc, from: usize, to: usize, right: bool) -> VimResult {
+        doc.shift_lines(from, to, right, self.indent_width);
+        doc.set_cursor((from, doc.first_text_col(from)));
+        VimResult::Handled
+    }
+
+    /// `iw`, `aw`, `i(`, `a"`, `ip` ... resolve to a span, then the pending
+    /// operator applies to it.
+    fn text_object(&mut self, doc: &mut Doc, around: bool, obj: char) -> VimResult {
+        let Some(op) = self.op.take() else { return VimResult::Handled };
+        let at = doc.head();
+        let span = match obj {
+            'w' | 'W' => doc.word_span_at(at).map(|(s, e)| {
+                if around {
+                    // `aw` takes the trailing whitespace too.
+                    let chars = doc.line_chars_vec(e.0);
+                    let mut end = e.1;
+                    while chars.get(end).is_some_and(|c| c.is_whitespace()) {
+                        end += 1;
+                    }
+                    (s, (e.0, end))
+                } else {
+                    (s, e)
+                }
+            }),
+            '(' | ')' | 'b' => doc.bracket_span(at, '(', ')').map(|(s, e)| trim_inside(around, s, e, doc)),
+            '{' | '}' | 'B' => doc.bracket_span(at, '{', '}').map(|(s, e)| trim_inside(around, s, e, doc)),
+            '[' | ']' => doc.bracket_span(at, '[', ']').map(|(s, e)| trim_inside(around, s, e, doc)),
+            '"' | '\'' | '`' => doc.quote_span(at, obj).map(|(s, e)| trim_inside(around, s, e, doc)),
+            'p' => {
+                let (a, b) = doc.paragraph_span(at.0);
+                self.register = (doc.lines_text(a, b), true);
+                doc.set_cursor((a, 0));
+                return self.line_op(doc, op, b - a + 1);
+            }
+            _ => None,
+        };
+        let Some((s, e)) = span else {
+            return VimResult::Handled;
+        };
+        let text = doc.text_between(s, e);
+        self.register = (text.clone(), false);
+        match op {
+            Op::Yank => doc.set_cursor(s),
+            Op::Delete | Op::Change => {
+                doc.edit(s, e, "");
+                if op == Op::Change {
+                    self.mode = Mode::Insert;
+                }
+            }
+        }
+        VimResult::Yanked(text)
     }
 
     fn find_char(&mut self, doc: &mut Doc, kind: char, target: char) -> VimResult {
@@ -457,7 +610,10 @@ impl Vim {
             '^' => doc.set_cursor((line, doc.first_text_col(line))),
             '$' => {
                 let target = (line + n - 1).min(last);
-                doc.set_cursor((target, doc.line_len(target)));
+                let end = doc.line_len(target);
+                // `$` rests on the last character; `d$` still takes all of it.
+                let col = if self.op.is_some() { end } else { end.saturating_sub(1) };
+                doc.set_cursor((target, col));
             }
             'G' => {
                 let target = if given { n.saturating_sub(1).min(last) } else { last };
@@ -648,7 +804,7 @@ mod tests {
     fn doc(text: &str) -> (Doc, Vim, Syntax) {
         let syntax = Syntax::load();
         let d = Doc::from_text(Path::new("t.rs"), text, &syntax);
-        (d, Vim::new(), syntax)
+        (d, Vim::new(4), syntax)
     }
 
     /// Feed a key sequence the way a user types it.
@@ -700,7 +856,7 @@ mod tests {
         assert_eq!(d.head().0, 0, "k goes up");
 
         keys(&mut v, &mut d, "$");
-        assert_eq!(d.head(), (0, 16), "$ goes to end of line");
+        assert_eq!(d.head(), (0, 15), "$ rests on the last character, as in Vim");
         keys(&mut v, &mut d, "0");
         assert_eq!(d.head(), (0, 0), "0 goes to column zero");
 
@@ -887,6 +1043,109 @@ mod tests {
     }
 
     #[test]
+    fn text_objects_select_the_thing_under_the_cursor() {
+        let (mut d, mut v, _s) = doc("let value = compute(a, b);\n");
+
+        // ciw on a word replaces just that word.
+        keys(&mut v, &mut d, "wciwtotal\x1b");
+        assert_eq!(d.line_text(0), Some("let total = compute(a, b);"), "ciw changed the word under the cursor");
+
+        // di( empties the parentheses but keeps them.
+        let (mut d, mut v, _s) = doc("let value = compute(a, b);\n");
+        keys(&mut v, &mut d, "f(di(");
+        assert_eq!(d.line_text(0), Some("let value = compute();"), "di( clears inside the brackets");
+
+        // da( takes the brackets too.
+        let (mut d, mut v, _s) = doc("let value = compute(a, b);\n");
+        keys(&mut v, &mut d, "f(da(");
+        assert_eq!(d.line_text(0), Some("let value = compute;"), "da( takes the brackets as well");
+
+        // ci" inside a string.
+        let (mut d, mut v, _s) = doc("let s = \"hello there\";\n");
+        keys(&mut v, &mut d, "f\"ci\"bye\x1b");
+        assert_eq!(d.line_text(0), Some("let s = \"bye\";"), "ci\" replaces the string contents");
+
+        // aw includes the trailing space.
+        let (mut d, mut v, _s) = doc("one two three\n");
+        keys(&mut v, &mut d, "wdaw");
+        assert_eq!(d.line_text(0), Some("one three"), "daw removes the word and its space");
+
+        // dap on a paragraph.
+        let (mut d, mut v, _s) = doc("a1\na2\n\nb1\n");
+        keys(&mut v, &mut d, "dap");
+        assert_eq!(d.text(), "\nb1", "dap removes the paragraph");
+    }
+
+    #[test]
+    fn dot_repeats_the_last_change() {
+        // The classic: change a word, then repeat it elsewhere.
+        let (mut d, mut v, _s) = doc("foo bar\nfoo baz\n");
+        keys(&mut v, &mut d, "ciwqux\x1b");
+        assert_eq!(d.line_text(0), Some("qux bar"));
+        keys(&mut v, &mut d, "j0.");
+        assert_eq!(d.line_text(1), Some("qux baz"), ". repeated the change on the next line");
+
+        // It repeats deletions too.
+        let (mut d, mut v, _s) = doc("one\ntwo\nthree\nfour\n");
+        keys(&mut v, &mut d, "dd");
+        assert_eq!(d.text(), "two\nthree\nfour");
+        keys(&mut v, &mut d, ".");
+        assert_eq!(d.text(), "three\nfour", ". repeated dd");
+
+        // Movement is not a change, so . must not repeat it.
+        let (mut d, mut v, _s) = doc("alpha beta\n");
+        keys(&mut v, &mut d, "x");
+        assert_eq!(d.line_text(0), Some("lpha beta"));
+        // Moving is not a change: `.` still repeats the x, at the new place.
+        keys(&mut v, &mut d, "0.");
+        assert_eq!(d.line_text(0), Some("pha beta"), "movement did not become the repeated change");
+    }
+
+    #[test]
+    fn indent_operators_shift_lines() {
+        let (mut d, mut v, _s) = doc("one\ntwo\nthree\n");
+        keys(&mut v, &mut d, ">>");
+        assert_eq!(d.line_text(0), Some("    one"), ">> indents one line");
+        keys(&mut v, &mut d, "<<");
+        assert_eq!(d.line_text(0), Some("one"), "<< unindents it again");
+
+        keys(&mut v, &mut d, "2>>");
+        assert_eq!(d.line_text(0), Some("    one"), "a count indents several lines");
+        assert_eq!(d.line_text(1), Some("    two"));
+        assert_eq!(d.line_text(2), Some("three"), "and no more than asked");
+    }
+
+    #[test]
+    fn star_searches_the_word_under_the_cursor() {
+        let (mut d, mut v, _s) = doc("needle haystack\nneedle\n");
+        assert_eq!(
+            v.handle(&mut d, KeyEvent::from(KeyCode::Char('*'))),
+            VimResult::Search("needle".into(), true)
+        );
+        assert_eq!(
+            v.handle(&mut d, KeyEvent::from(KeyCode::Char('#'))),
+            VimResult::Search("needle".into(), false),
+            "# searches backwards"
+        );
+    }
+
+    #[test]
+    fn percent_jumps_between_matching_brackets() {
+        let (mut d, mut v, _s) = doc("fn main() {\n    let x = (1 + 2);\n}\n");
+        keys(&mut v, &mut d, "$");
+        assert_eq!(d.head(), (0, 10), "on the opening brace");
+        keys(&mut v, &mut d, "%");
+        assert_eq!(d.head(), (2, 0), "% jumped to the closing brace");
+        keys(&mut v, &mut d, "%");
+        assert_eq!(d.head(), (0, 10), "% jumped back");
+
+        // As an operator target: d% deletes the pair and what is inside it.
+        let (mut d, mut v, _s) = doc("call(a, b) end\n");
+        keys(&mut v, &mut d, "f(d%");
+        assert_eq!(d.line_text(0), Some("call end"), "d% took the bracketed span");
+    }
+
+    #[test]
     fn unknown_keys_pass_through_rather_than_being_swallowed() {
         let (mut d, mut v, _s) = doc("one\n");
         // Arrow keys and shortcuts must keep working in normal mode.
@@ -900,5 +1159,15 @@ mod tests {
         v.handle(&mut d, KeyEvent::from(KeyCode::Char('d')));
         assert_eq!(v.handle(&mut d, KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)), VimResult::PassThrough);
         assert_eq!(d.text(), "one", "nothing was deleted");
+    }
+}
+
+/// `i(` excludes the brackets, `a(` includes them.
+fn trim_inside(around: bool, s: Pos, e: Pos, doc: &Doc) -> (Pos, Pos) {
+    if around {
+        (s, (e.0, e.1 + 1))
+    } else {
+        let start = if s.1 + 1 <= doc.line_len(s.0) { (s.0, s.1 + 1) } else { (s.0 + 1, 0) };
+        (start, e)
     }
 }

@@ -1670,6 +1670,146 @@ impl Doc {
         }
     }
 
+    /// How many edits this document has seen; `.` uses it to notice that a
+    /// command actually changed something.
+    pub(super) fn edit_seq(&self) -> u64 {
+        self.edits
+    }
+
+    pub(super) fn word_span_at(&self, p: Pos) -> Option<(Pos, Pos)> {
+        self.word_range_at(p)
+    }
+
+    /// Indent or unindent whole lines, as `>>` and `<<` do.
+    pub(super) fn shift_lines(&mut self, from: usize, to: usize, right: bool, width: usize) {
+        let to = to.min(self.last_line());
+        self.push_undo(EditKind::Other);
+        let unit: String = if self.uses_tabs() { "\t".into() } else { " ".repeat(width) };
+        for line in from..=to {
+            if right {
+                if !self.lines[line].is_empty() {
+                    self.replace((line, 0), (line, 0), &unit);
+                }
+            } else {
+                let text = &self.lines[line];
+                let drop = if text.starts_with('\t') {
+                    1
+                } else {
+                    text.chars().take(width).take_while(|c| *c == ' ').count()
+                };
+                if drop > 0 {
+                    self.replace((line, 0), (line, drop), "");
+                }
+            }
+        }
+        self.changed(from);
+    }
+
+    /// The bracket matching the one at `p`, for `%`.
+    pub(super) fn match_bracket(&self, p: Pos) -> Option<Pos> {
+        let pairs = [('(', ')'), ('[', ']'), ('{', '}')];
+        let here = self.line_chars_vec(p.0).get(p.1).copied()?;
+        let (open, close, forward) = pairs
+            .iter()
+            .find_map(|&(o, c)| {
+                if here == o {
+                    Some((o, c, true))
+                } else if here == c {
+                    Some((o, c, false))
+                } else {
+                    None
+                }
+            })?;
+        let mut depth = 0i32;
+        let (mut line, mut cx) = p;
+        loop {
+            let chars = self.line_chars_vec(line);
+            if let Some(&c) = chars.get(cx) {
+                if c == open {
+                    depth += if forward { 1 } else { -1 };
+                } else if c == close {
+                    depth += if forward { -1 } else { 1 };
+                }
+                if depth == 0 {
+                    return Some((line, cx));
+                }
+            }
+            if forward {
+                if cx + 1 < chars.len() {
+                    cx += 1;
+                } else if line < self.last_line() {
+                    line += 1;
+                    cx = 0;
+                } else {
+                    return None;
+                }
+            } else if cx > 0 {
+                cx -= 1;
+            } else if line > 0 {
+                line -= 1;
+                cx = self.line_chars(line).saturating_sub(1);
+            } else {
+                return None;
+            }
+        }
+    }
+
+    /// The span of a bracket pair containing `p`, for `i(` and `a(`.
+    pub(super) fn bracket_span(&self, p: Pos, open: char, close: char) -> Option<(Pos, Pos)> {
+        // Walk out to the enclosing opening bracket, then match it.
+        let mut depth = 0i32;
+        let (mut line, mut cx) = p;
+        let start = loop {
+            let chars = self.line_chars_vec(line);
+            match chars.get(cx).copied() {
+                Some(c) if c == close && (line, cx) != p => depth += 1,
+                Some(c) if c == open => {
+                    if depth == 0 {
+                        break (line, cx);
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+            if cx > 0 {
+                cx -= 1;
+            } else if line > 0 {
+                line -= 1;
+                cx = self.line_chars(line).saturating_sub(1);
+            } else {
+                return None;
+            }
+        };
+        let end = self.match_bracket(start)?;
+        Some((start, end))
+    }
+
+    /// The span between the quotes around `p` on this line, for `i"`.
+    pub(super) fn quote_span(&self, p: Pos, quote: char) -> Option<(Pos, Pos)> {
+        let chars = self.line_chars_vec(p.0);
+        let positions: Vec<usize> = chars.iter().enumerate().filter(|(_, c)| **c == quote).map(|(i, _)| i).collect();
+        for pair in positions.chunks(2) {
+            if pair.len() == 2 && p.1 >= pair[0] && p.1 <= pair[1] {
+                return Some(((p.0, pair[0]), (p.0, pair[1])));
+            }
+        }
+        None
+    }
+
+    /// The paragraph around a line: up to blank lines either side.
+    pub(super) fn paragraph_span(&self, line: usize) -> (usize, usize) {
+        let blank = |i: usize| self.lines.get(i).is_some_and(|l| l.trim().is_empty());
+        let mut s = line;
+        let mut e = line;
+        while s > 0 && !blank(s - 1) {
+            s -= 1;
+        }
+        while e < self.last_line() && !blank(e + 1) {
+            e += 1;
+        }
+        (s, e)
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> KeyResult {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);

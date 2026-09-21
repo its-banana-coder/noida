@@ -321,7 +321,7 @@ impl App {
             quit: false,
             host_out: Vec::new(),
             tx,
-            vim: vim::Vim::new(),
+            vim: vim::Vim::new(4),
             test_run: 0,
             root,
         };
@@ -331,6 +331,7 @@ impl App {
                 let (keymap, bad) = keys::keymap(&s.keys);
                 app.keymap = keymap;
                 app.lsp.configure(&s.lsp);
+                app.vim = vim::Vim::new(s.tab_width);
                 app.settings = s;
                 if !bad.is_empty() {
                     app.error(format!("settings.json keys: {}", bad.join(", ")));

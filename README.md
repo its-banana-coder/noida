@@ -326,12 +326,14 @@ Set `"vim": true` in `~/.config/noida/settings.json` for modal editing. It is a 
 | | |
 |---|---|
 | **Modes** | `i a I A o O` insert · `v` visual · `V` visual line · `Esc` back to normal |
-| **Motions** | `h j k l` · `w b e` (and `W B E`) · `0 ^ $` · `gg G` · `{ }` · `f F t T` with `;` `,` · `Ctrl+d/u/f/b` |
-| **Operators** | `d c y` with any motion · `dd cc yy` · `D C Y` · counts like `d2w`, `3dd` |
+| **Motions** | `h j k l` · `w b e` (and `W B E`) · `0 ^ $` · `gg G` · `{ }` · `%` · `f F t T` with `;` `,` · `Ctrl+d/u/f/b` |
+| **Operators** | `d c y` with any motion · `dd cc yy` · `D C Y` · counts like `d2w`, `3dd` · `>>` `<<` indent |
+| **Text objects** | `iw aw` · `i( a(` `i{ a{` `i[ a[` · `i" a"` `i' a'` · `ip ap` — so `ciw`, `di(`, `ca"` work |
+| **Repeat** | `.` repeats the last change · `*` `#` search the word under the cursor |
 | **Edits** | `x X s S r` · `p P` · `J` join · `u` undo · `Ctrl+r` redo |
 | **Commands** | `/` `?` search with `n` `N` · `:w :q :wq :x :qa :42` |
 
-The mode shows in the status bar. Anything Vim does not claim falls through to NOIDA's own keys, so `Ctrl+S`, `F12`, the arrows and every `Alt` shortcut keep working in any mode. Not implemented: macros, named registers, marks, text objects and `:s///` — [say so in an issue](https://github.com/its-banana-coder/noida/issues) if you miss them.
+The mode shows in the status bar. Anything Vim does not claim falls through to NOIDA's own keys, so `Ctrl+S`, `F12`, the arrows and every `Alt` shortcut keep working in any mode. Not implemented: macros, named registers, marks and `:s///` — [say so in an issue](https://github.com/its-banana-coder/noida/issues) if you miss them.
 
 ### Custom keybindings
 
