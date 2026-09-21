@@ -754,7 +754,11 @@ impl App {
                     self.agents[idx].hook_working = Some(false);
                 }
             }
-            AgentEvent::Notification { .. } => {}
+            // Only the human can clear a permission prompt, so it becomes part
+            // of the agent's state rather than just a banner that times out.
+            AgentEvent::Notification { permission, .. } => {
+                self.agents[idx].awaiting_permission = *permission;
+            }
         }
         match self.activity.record(id, &name, &ev) {
             Notice::Permission(message) => {

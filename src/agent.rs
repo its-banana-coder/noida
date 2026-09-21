@@ -102,6 +102,8 @@ pub struct Agent {
     pub renamed: bool,
     /// Set when hooks report working/idle precisely.
     pub hook_working: Option<bool>,
+    /// A permission prompt is on screen; only the human can clear it.
+    pub awaiting_permission: bool,
     started_at: Option<Instant>,
     program: String,
     args: Vec<String>,
@@ -127,6 +129,55 @@ enum Attention {
     Finished,
 }
 
+/// What an agent is doing, as one answer.
+///
+/// NOIDA used to recompute this at each call site from `exited`, `error`,
+/// `working`, `attention` and `started_at`, which made "is this agent busy?"
+/// a slightly different question in every view. The spec's state machine
+/// (docs/agent-native-spec.md §5.2) is larger than this, but it describes
+/// states NOIDA cannot observe yet: nothing in the hook stream distinguishes
+/// planning from implementing, and review and merge are human actions we do
+/// not record. These are the states the current integration can actually tell
+/// apart, and the ones views are allowed to ask about.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AgentState {
+    /// Configured, process not started.
+    Created,
+    /// Producing output, or hooks reported a tool running.
+    Working,
+    /// Running and idle: the agent is waiting for the human.
+    AwaitingInput,
+    /// Blocked on a permission prompt that only the human can answer.
+    AwaitingPermission,
+    /// Finished a turn while this tab was in the background.
+    Finished,
+    /// Exited with an error, or died within seconds of starting.
+    Failed,
+    /// Exited cleanly.
+    Exited,
+}
+
+impl AgentState {
+    /// True while the agent cannot make progress without the human.
+    pub fn needs_human(self) -> bool {
+        matches!(self, AgentState::AwaitingPermission | AgentState::Failed)
+    }
+
+    pub fn glyph(self) -> &'static str {
+        match self {
+            AgentState::Created => "○",
+            AgentState::Working => {
+                let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+                SPINNER[(ms / 100) as usize % SPINNER.len()]
+            }
+            AgentState::AwaitingPermission => "!",
+            AgentState::Finished => "✓",
+            AgentState::Failed | AgentState::Exited => "✗",
+            AgentState::AwaitingInput => "●",
+        }
+    }
+}
+
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 impl Agent {
@@ -149,6 +200,7 @@ impl Agent {
             title: None,
             renamed: false,
             hook_working: None,
+            awaiting_permission: false,
             started_at: None,
             program: parts.next().unwrap_or_default(),
             args: parts.collect(),
@@ -290,6 +342,7 @@ impl Agent {
 
     pub fn seen(&mut self) {
         self.attention = None;
+        self.awaiting_permission = false;
     }
 
     /// Tab label: the conversation title when known, else the tab name.
@@ -304,21 +357,31 @@ impl Agent {
         }
     }
 
-    pub fn status_glyph(&self) -> &'static str {
-        if self.error.is_some() || self.exited {
-            "✗"
-        } else if !self.started() {
-            "○"
-        } else if self.attention == Some(Attention::Bell) {
-            "!"
+    /// What this agent is doing. The single answer every view should use.
+    pub fn state(&self) -> AgentState {
+        // Ordered by what the signals mean, not by where they come from: the
+        // flags below are only ever set for an agent that has actually run, so
+        // asking about them before `started()` keeps this testable without
+        // spawning a process.
+        if self.error.is_some() || self.died_quickly() {
+            AgentState::Failed
+        } else if self.exited {
+            AgentState::Exited
+        } else if self.awaiting_permission || self.attention == Some(Attention::Bell) {
+            AgentState::AwaitingPermission
         } else if self.working {
-            let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-            SPINNER[(ms / 100) as usize % SPINNER.len()]
+            AgentState::Working
         } else if self.attention == Some(Attention::Finished) {
-            "✓"
+            AgentState::Finished
+        } else if !self.started() {
+            AgentState::Created
         } else {
-            "●"
+            AgentState::AwaitingInput
         }
+    }
+
+    pub fn status_glyph(&self) -> &'static str {
+        self.state().glyph()
     }
 
     pub fn on_exit(&mut self) {
@@ -801,6 +864,44 @@ fn resolve_windows(program: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_machine_reports_one_answer() {
+        let mut a = Agent::new(0, "t", "sh", PathBuf::from("."));
+        assert_eq!(a.state(), AgentState::Created, "not started yet");
+        assert_eq!(a.status_glyph(), "○");
+
+        a.started_at = Some(Instant::now());
+
+        // A permission prompt outranks whatever else it was doing: it is the
+        // one state where nothing moves until the human answers.
+        a.awaiting_permission = true;
+        assert_eq!(a.state(), AgentState::AwaitingPermission);
+        assert!(a.state().needs_human());
+        assert_eq!(a.status_glyph(), "!");
+
+        // Looking at the tab clears it.
+        a.seen();
+        assert!(!a.awaiting_permission);
+
+        // A failure outranks everything, including a pending permission.
+        a.awaiting_permission = true;
+        a.error = Some("boom".into());
+        assert_eq!(a.state(), AgentState::Failed);
+        assert!(a.state().needs_human());
+
+        // A clean exit is not a failure, and needs nothing from the human.
+        a.error = None;
+        a.awaiting_permission = false;
+        a.started_at = Some(Instant::now() - Duration::from_secs(60));
+        a.exited = true;
+        assert_eq!(a.state(), AgentState::Exited);
+        assert!(!a.state().needs_human());
+
+        // ...but dying seconds after launch is (e.g. a bad --resume).
+        a.started_at = Some(Instant::now());
+        assert_eq!(a.state(), AgentState::Failed);
+    }
 
     #[test]
     fn keys() {

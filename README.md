@@ -355,6 +355,10 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**: a li
 - [ ] Polish from early feedback
 - [ ] Verify gopls and pylsp
 
+### 🧭 Where this is going
+
+The longer-term direction is written down in [the agent-native IDE spec](docs/agent-native-spec.md): NOIDA as the environment agents work in, built around **intent → context → agent → execution → evidence → review** rather than around the editor. [Sprint 1 gap analysis](docs/sprint-1-gap-analysis.md) maps its first sprint onto what already ships — about half of it does — and sets the order of work.
+
 ### 🔭 Later
 - [ ] Remote development over SSH
 - [ ] Project map and dependency view for monorepos
