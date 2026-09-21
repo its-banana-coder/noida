@@ -445,6 +445,12 @@ impl App {
                         (Focus::Editor, Some(View::Transcript(v))) => v.status().into(),
                         (Focus::Editor, Some(View::Tests(v))) => v.status().into(),
                         (Focus::Tree, _) => "↑↓ move  ⏎ open  ← collapse  R refresh  │  Alt+x commands  Alt+o files  Alt+g sessions  Alt+q quit".into(),
+                        // In modal editing the mode matters more than a hint
+                        // bar, and a half-typed `:` line has to be visible.
+                        (Focus::Editor, None) if self.settings.vim => match self.vim.pending_line() {
+                            Some(line) => line,
+                            None => format!("{}   ^S save  Alt+x commands", self.vim.mode.label()),
+                        },
                         (Focus::Editor, None) => "^S save  ^F find  F12 definition  Alt+l symbols  │  Alt+s send  Alt+e ask  Alt+r review  Alt+x commands".into(),
                         (Focus::Agent, _) => "Alt+j jump to ref  Alt+? find  drag to copy  Alt+g sessions  Alt+n next  Alt+v split  │  Alt+r review  Alt+x commands".into(),
                     },

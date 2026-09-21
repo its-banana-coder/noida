@@ -2,6 +2,7 @@
 //! folding and language-aware editing helpers.
 
 mod lang;
+pub mod vim;
 mod view;
 
 pub use view::Click;
@@ -1404,6 +1405,270 @@ impl Doc {
     }
 
     // ---- keys ----
+
+    // ------------------------------------------------- helpers for vim --
+    //
+    // The modal layer lives in `vim.rs` and drives the document through these
+    // rather than touching lines directly, so its edits go through the same
+    // undo, cursor-shifting and reparse path as every other key.
+
+    pub(super) fn head(&self) -> Pos {
+        self.primary().head
+    }
+
+    pub(super) fn last_line(&self) -> usize {
+        self.lines.len().saturating_sub(1)
+    }
+
+    pub(super) fn line_len(&self, line: usize) -> usize {
+        self.line_chars(line)
+    }
+
+    pub(super) fn first_text_col(&self, line: usize) -> usize {
+        self.first_non_ws(line)
+    }
+
+    pub(super) fn page_height(&self) -> usize {
+        self.view.height.max(2)
+    }
+
+    pub(super) fn line_chars_vec(&self, line: usize) -> Vec<char> {
+        self.lines.get(line).map(|l| l.chars().collect()).unwrap_or_default()
+    }
+
+    pub(super) fn set_cursor(&mut self, pos: Pos) {
+        let line = pos.0.min(self.last_line());
+        let cx = pos.1.min(self.line_chars(line));
+        self.cursors = vec![Cursor { anchor: (line, cx), head: (line, cx), want: None }];
+    }
+
+    pub(super) fn start_selection(&mut self) {
+        let at = self.head();
+        self.cursors = vec![Cursor { anchor: at, head: at, want: None }];
+    }
+
+    pub(super) fn set_selection(&mut self, anchor: Pos, head: Pos) {
+        self.cursors = vec![Cursor { anchor, head, want: None }];
+    }
+
+    pub(super) fn selection_anchor(&self) -> Pos {
+        self.primary().anchor
+    }
+
+    pub(super) fn selection_span(&self) -> (Pos, Pos) {
+        self.primary().range()
+    }
+
+    pub(super) fn swap_selection_ends(&mut self) {
+        let c = *self.primary();
+        self.cursors = vec![Cursor { anchor: c.head, head: c.anchor, want: None }];
+    }
+
+    pub(super) fn collapse_to_head(&mut self) {
+        let at = self.head();
+        self.set_cursor(at);
+    }
+
+    pub(super) fn text_between(&self, s: Pos, e: Pos) -> String {
+        let (s, e) = if s <= e { (s, e) } else { (e, s) };
+        let (sb, eb) = (self.byte_of(s), self.byte_of(e));
+        let all = self.text();
+        all.get(sb..eb).unwrap_or_default().to_string()
+    }
+
+    /// One edit, as an undo step.
+    pub(super) fn edit(&mut self, s: Pos, e: Pos, text: &str) {
+        self.push_undo(EditKind::Other);
+        let at = self.replace(s, e, text);
+        self.set_cursor(at);
+        self.changed(s.0);
+    }
+
+    pub(super) fn lines_text(&self, from: usize, to: usize) -> String {
+        let mut out = String::new();
+        for i in from..=to.min(self.last_line()) {
+            out.push_str(&self.lines[i]);
+            out.push('\n');
+        }
+        out
+    }
+
+    pub(super) fn indent_text(&self, line: usize) -> String {
+        self.lines
+            .get(line)
+            .map(|l| l.chars().take_while(|c| c.is_whitespace()).collect())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn delete_lines_range(&mut self, from: usize, to: usize) {
+        let last = self.last_line();
+        let to = to.min(last);
+        self.push_undo(EditKind::Other);
+        // Take the newline after the block, or the one before it on the last line.
+        let (s, e) = if to < last { ((from, 0), (to + 1, 0)) } else if from > 0 { ((from - 1, self.line_chars(from - 1)), (to, self.line_chars(to))) } else { ((0, 0), (to, self.line_chars(to))) };
+        let at = self.replace(s, e, "");
+        self.set_cursor((at.0.min(self.last_line()), 0));
+        self.changed(from.saturating_sub(1));
+    }
+
+    pub(super) fn insert_line_at(&mut self, line: usize, text: &str) {
+        let last = self.last_line();
+        self.push_undo(EditKind::Other);
+        if line > last {
+            let end = (last, self.line_chars(last));
+            self.replace(end, end, &format!("\n{text}"));
+        } else {
+            self.replace((line, 0), (line, 0), &format!("{text}\n"));
+        }
+        self.set_cursor((line.min(self.last_line()), text.chars().count()));
+        self.changed(line.saturating_sub(1));
+    }
+
+    /// Paste whole lines below (or above) a line.
+    pub(super) fn insert_lines(&mut self, at: usize, text: &str) {
+        let text = if text.ends_with('\n') { text.to_string() } else { format!("{text}\n") };
+        let last = self.last_line();
+        self.push_undo(EditKind::Other);
+        if at > last {
+            let end = (last, self.line_chars(last));
+            self.replace(end, end, &format!("\n{}", text.trim_end_matches('\n')));
+        } else {
+            self.replace((at, 0), (at, 0), &text);
+        }
+        self.changed(at.saturating_sub(1));
+    }
+
+    /// Join the next line onto this one, as `J` does: one space, no double space.
+    pub(super) fn join_line(&mut self, line: usize) {
+        if line >= self.last_line() {
+            return;
+        }
+        self.push_undo(EditKind::Other);
+        let end = self.line_chars(line);
+        let next_indent = self.first_non_ws(line + 1);
+        let joiner = if self.lines[line].is_empty() || self.lines[line + 1].is_empty() { "" } else { " " };
+        self.replace((line, end), (line + 1, next_indent), joiner);
+        self.set_cursor((line, end));
+        self.changed(line);
+    }
+
+    /// Where `w`, `b` or `e` lands from `at`.
+    pub(super) fn word_move(&self, at: Pos, kind: char) -> Pos {
+        let big = kind.is_uppercase();
+        let class = |c: char| {
+            if c.is_whitespace() {
+                0
+            } else if big || c.is_alphanumeric() || c == '_' {
+                1
+            } else {
+                2
+            }
+        };
+        let (mut line, mut cx) = at;
+        let forward = matches!(kind, 'w' | 'W' | 'e' | 'E');
+        let mut chars = self.line_chars_vec(line);
+
+        let step = |line: &mut usize, cx: &mut usize, chars: &mut Vec<char>| -> bool {
+            if forward {
+                if *cx + 1 <= chars.len().saturating_sub(1) || (*cx + 1 < chars.len()) {
+                    *cx += 1;
+                    return true;
+                }
+                if *line < self.last_line() {
+                    *line += 1;
+                    *cx = 0;
+                    *chars = self.line_chars_vec(*line);
+                    return true;
+                }
+                false
+            } else {
+                if *cx > 0 {
+                    *cx -= 1;
+                    return true;
+                }
+                if *line > 0 {
+                    *line -= 1;
+                    *chars = self.line_chars_vec(*line);
+                    *cx = chars.len().saturating_sub(1);
+                    return true;
+                }
+                false
+            }
+        };
+
+        let start_class = chars.get(cx).copied().map(class).unwrap_or(0);
+        match kind {
+            'w' | 'W' => {
+                // Off the current word, then over any whitespace.
+                while chars.get(cx).copied().map(class).unwrap_or(0) == start_class && start_class != 0 {
+                    if !step(&mut line, &mut cx, &mut chars) {
+                        return (line, cx);
+                    }
+                }
+                while chars.get(cx).copied().map(class).unwrap_or(0) == 0 {
+                    if !step(&mut line, &mut cx, &mut chars) {
+                        return (line, cx);
+                    }
+                }
+            }
+            'b' | 'B' => {
+                if !step(&mut line, &mut cx, &mut chars) {
+                    return (line, cx);
+                }
+                while chars.get(cx).copied().map(class).unwrap_or(0) == 0 {
+                    if !step(&mut line, &mut cx, &mut chars) {
+                        return (line, cx);
+                    }
+                }
+                let here = chars.get(cx).copied().map(class).unwrap_or(0);
+                while cx > 0 && chars.get(cx - 1).copied().map(class).unwrap_or(0) == here {
+                    cx -= 1;
+                }
+            }
+            _ => {
+                // `e`: end of this word, or of the next one.
+                if !step(&mut line, &mut cx, &mut chars) {
+                    return (line, cx);
+                }
+                while chars.get(cx).copied().map(class).unwrap_or(0) == 0 {
+                    if !step(&mut line, &mut cx, &mut chars) {
+                        return (line, cx);
+                    }
+                }
+                let here = chars.get(cx).copied().map(class).unwrap_or(0);
+                while chars.get(cx + 1).copied().map(class).unwrap_or(0) == here {
+                    cx += 1;
+                }
+            }
+        }
+        (line, cx)
+    }
+
+    /// `{` and `}`: the next blank line in that direction.
+    pub(super) fn paragraph_move(&self, from: usize, down: bool) -> usize {
+        let last = self.last_line();
+        let blank = |i: usize| self.lines.get(i).is_some_and(|l| l.trim().is_empty());
+        let mut i = from;
+        loop {
+            if down {
+                if i >= last {
+                    return last;
+                }
+                i += 1;
+            } else {
+                if i == 0 {
+                    return 0;
+                }
+                i -= 1;
+            }
+            if blank(i) && !blank(from) {
+                return i;
+            }
+            if blank(i) && i != from && !blank(if down { i.saturating_sub(1) } else { i + 1 }) {
+                return i;
+            }
+        }
+    }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> KeyResult {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);

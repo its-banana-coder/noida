@@ -272,18 +272,75 @@ pub struct Lsp {
     tx: Sender<Bg>,
     servers: Vec<Server>,
     by_lang: HashMap<Lang, Option<usize>>,
+    /// Servers configured by file extension in settings.json. NOIDA only ships
+    /// tree-sitter grammars for a handful of languages, and `Lang` is tied to
+    /// those, so without this a language we have no grammar for -- SQL, C#,
+    /// Kotlin, Terraform -- could never get a language server at all.
+    by_ext: HashMap<String, Option<usize>>,
+    configured: HashMap<String, Vec<String>>,
     pub diagnostics: HashMap<PathBuf, Vec<Diagnostic>>,
 }
 
 impl Lsp {
     pub fn new(root: PathBuf, tx: Sender<Bg>) -> Self {
-        Self { root, tx, servers: Vec::new(), by_lang: HashMap::new(), diagnostics: HashMap::new() }
+        Self {
+            root,
+            tx,
+            servers: Vec::new(),
+            by_lang: HashMap::new(),
+            by_ext: HashMap::new(),
+            configured: HashMap::new(),
+            diagnostics: HashMap::new(),
+        }
+    }
+
+    /// Language servers from settings, as extension -> command line, e.g.
+    /// `{"sql": "sqls", "java": "jdtls -data /tmp/jdtls"}`. A configured
+    /// extension wins over the built-in default for that language, so a
+    /// server that needs arguments can be spelled out.
+    pub fn configure(&mut self, servers: &HashMap<String, String>) {
+        self.configured = servers
+            .iter()
+            .filter_map(|(ext, cmd)| {
+                let parts: Vec<String> = cmd.split_whitespace().map(String::from).collect();
+                (!parts.is_empty()).then(|| (ext.trim_start_matches('.').to_ascii_lowercase(), parts))
+            })
+            .collect();
+    }
+
+    fn ext_of(path: &Path) -> Option<String> {
+        Some(path.extension()?.to_str()?.to_ascii_lowercase())
+    }
+
+    /// The running server for this file, if there is one.
+    fn index_for(&self, path: &Path) -> Option<usize> {
+        if let Some(ext) = Self::ext_of(path) {
+            if let Some(idx) = self.by_ext.get(&ext) {
+                return *idx;
+            }
+        }
+        Lang::for_path(path).and_then(|l| self.by_lang.get(&l).copied().flatten())
+    }
+
+    /// Start (or reuse) the server for this file.
+    fn server_for_path(&mut self, path: &Path) -> Option<usize> {
+        if let Some(ext) = Self::ext_of(path) {
+            if self.configured.contains_key(&ext) {
+                if let Some(idx) = self.by_ext.get(&ext) {
+                    return *idx;
+                }
+                let cmd = self.configured.get(&ext).cloned()?;
+                let args: Vec<&str> = cmd[1..].iter().map(String::as_str).collect();
+                let idx = self.start(&cmd[0].clone(), &args);
+                self.by_ext.insert(ext, idx);
+                return idx;
+            }
+        }
+        self.server(Lang::for_path(path)?)
     }
 
     pub fn server_name(&self, path: &Path) -> Option<&str> {
-        let lang = Lang::for_path(path)?;
-        let idx = (*self.by_lang.get(&lang)?)?;
-        Some(&self.servers[idx].name)
+        Some(&self.servers[self.index_for(path)?].name)
     }
 
     fn server(&mut self, lang: Lang) -> Option<usize> {
@@ -309,6 +366,12 @@ impl Lsp {
                 (bin.to_string(), args.to_vec())
             }
         };
+        self.start(&bin, &args)
+    }
+
+    /// Launch one language server and wire up its stdout reader.
+    fn start(&mut self, bin: &str, args: &[&str]) -> Option<usize> {
+        let bin = bin.to_string();
         let name = Path::new(&bin).file_name().map_or(bin.clone(), |n| n.to_string_lossy().into_owned());
         let mut child = Command::new(&bin)
             .args(args)
@@ -402,19 +465,24 @@ impl Lsp {
     }
 
     pub fn did_open(&mut self, path: &Path, text: &str) {
-        let Some(lang) = Lang::for_path(path) else { return };
-        let Some(idx) = self.server(lang) else { return };
+        let Some(idx) = self.server_for_path(path) else { return };
+        let lang_id = match Lang::for_path(path) {
+            Some(lang) => language_id(lang).to_string(),
+            // No grammar: the extension is the best language id we have, and
+            // it is what most servers expect anyway ("sql", "kt", "tf").
+            None => Self::ext_of(path).unwrap_or_default(),
+        };
         let s = &mut self.servers[idx];
         if s.open.contains_key(path) {
             return;
         }
         s.open.insert(path.to_path_buf(), 1);
-        s.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri(path), "languageId": language_id(lang), "version": 1, "text": text}}));
+        s.notify("textDocument/didOpen", json!({"textDocument": {"uri": uri(path), "languageId": lang_id, "version": 1, "text": text}}));
         s.pull_diagnostics(path);
     }
 
     pub fn did_change(&mut self, path: &Path, text: &str) {
-        let Some(idx) = Lang::for_path(path).and_then(|l| self.by_lang.get(&l).copied().flatten()) else { return };
+        let Some(idx) = self.index_for(path) else { return };
         let s = &mut self.servers[idx];
         let Some(version) = s.open.get_mut(path) else { return };
         *version += 1;
@@ -424,7 +492,7 @@ impl Lsp {
     }
 
     pub fn did_save(&mut self, path: &Path) {
-        let Some(idx) = Lang::for_path(path).and_then(|l| self.by_lang.get(&l).copied().flatten()) else { return };
+        let Some(idx) = self.index_for(path) else { return };
         let s = &mut self.servers[idx];
         if s.open.contains_key(path) {
             s.notify("textDocument/didSave", json!({"textDocument": {"uri": uri(path)}}));
@@ -432,7 +500,7 @@ impl Lsp {
     }
 
     pub fn did_close(&mut self, path: &Path) {
-        let Some(idx) = Lang::for_path(path).and_then(|l| self.by_lang.get(&l).copied().flatten()) else { return };
+        let Some(idx) = self.index_for(path) else { return };
         let s = &mut self.servers[idx];
         if s.open.remove(path).is_some() {
             s.notify("textDocument/didClose", json!({"textDocument": {"uri": uri(path)}}));
@@ -452,7 +520,7 @@ impl Lsp {
 
     /// Send a request for `path`; `params` gets `textDocument` filled in.
     pub fn request_with(&mut self, kind: Request, path: &Path, mut params: Value) -> bool {
-        let Some(idx) = Lang::for_path(path).and_then(|l| self.by_lang.get(&l).copied().flatten()) else { return false };
+        let Some(idx) = self.index_for(path) else { return false };
         let s = &mut self.servers[idx];
         if !s.ready || (!s.open.contains_key(path) && kind != Request::ExecuteCommand) {
             return false;
@@ -488,6 +556,7 @@ impl Lsp {
                     s.open.clear();
                 }
                 self.by_lang.retain(|_, v| *v != Some(idx));
+                self.by_ext.retain(|_, v| *v != Some(idx));
                 return Response::None;
             }
             LspEvent::Message(idx, msg) => (idx, msg),
@@ -613,6 +682,65 @@ impl Lsp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_servers_cover_languages_we_have_no_grammar_for() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut lsp = Lsp::new(PathBuf::from("/tmp"), tx);
+
+        let mut cfg = HashMap::new();
+        cfg.insert("sql".to_string(), "sqls".to_string());
+        cfg.insert(".KT".to_string(), "kotlin-language-server --stdio".to_string());
+        cfg.insert("java".to_string(), "jdtls -data /tmp/ws".to_string());
+        cfg.insert("blank".to_string(), "   ".to_string());
+        lsp.configure(&cfg);
+
+        // Leading dots and case are accepted: users write both.
+        assert_eq!(lsp.configured.get("sql").unwrap(), &vec!["sqls".to_string()]);
+        assert_eq!(
+            lsp.configured.get("kt").unwrap(),
+            &vec!["kotlin-language-server".to_string(), "--stdio".to_string()],
+            "a leading dot and capitals are normalised"
+        );
+        // Arguments survive, which is the whole point for jdtls.
+        assert_eq!(lsp.configured.get("java").unwrap().len(), 3);
+        assert!(!lsp.configured.contains_key("blank"), "an empty command is not a server");
+
+        // SQL has no Lang, so only configuration can give it a server.
+        assert!(Lang::for_path(Path::new("q.sql")).is_none(), "no grammar for SQL");
+        assert_eq!(Lsp::ext_of(Path::new("/a/q.SQL")).as_deref(), Some("sql"));
+
+        // Nothing has been started, so nothing resolves yet.
+        assert_eq!(lsp.index_for(Path::new("/a/q.sql")), None);
+        assert_eq!(lsp.server_name(Path::new("/a/q.sql")), None);
+    }
+
+    #[test]
+    fn built_in_servers_are_named_per_language() {
+        // Guards the table itself: a typo here silently disables a language.
+        for (lang, bin) in [
+            (Lang::Rust, "rust-analyzer"),
+            (Lang::Python, "pyright-langserver"),
+            (Lang::Go, "gopls"),
+            (Lang::Java, "jdtls"),
+        ] {
+            let candidates: Vec<&str> = match lang {
+                Lang::Rust => vec!["rust-analyzer"],
+                Lang::Python => vec!["pyright-langserver", "pylsp"],
+                Lang::Go => vec!["gopls"],
+                Lang::Java => vec!["jdtls"],
+                _ => vec![],
+            };
+            assert!(candidates.contains(&bin), "{lang:?} should try {bin}");
+            assert_eq!(language_id(lang), match lang {
+                Lang::Rust => "rust",
+                Lang::Python => "python",
+                Lang::Go => "go",
+                Lang::Java => "java",
+                _ => unreachable!(),
+            });
+        }
+    }
 
     #[test]
     fn uris() {

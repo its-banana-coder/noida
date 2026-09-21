@@ -25,6 +25,7 @@ use crate::activity::{Activity, Notice, Turn};
 use crate::agent::{Agent, HINT_KEYS, hint_label};
 use crate::changes::{self, Mark};
 use crate::editor::{Click, Doc, KeyResult, SearchOpts, Syntax};
+use crate::editor::vim;
 use crate::keys::{self, Keymap};
 use crate::settings::{self, Settings};
 use crate::events::Bg;
@@ -194,6 +195,8 @@ pub struct App {
     leader: bool,
     shared_context: String,
     tx: Sender<Bg>,
+    /// Modal editing state, when `"vim": true`.
+    vim: vim::Vim,
     /// Identifies the newest test run, so a replaced run's late output is ignored.
     test_run: u64,
     file_index: Arc<FileIndex>,
@@ -318,6 +321,7 @@ impl App {
             quit: false,
             host_out: Vec::new(),
             tx,
+            vim: vim::Vim::new(),
             test_run: 0,
             root,
         };
@@ -326,6 +330,7 @@ impl App {
             Ok(s) => {
                 let (keymap, bad) = keys::keymap(&s.keys);
                 app.keymap = keymap;
+                app.lsp.configure(&s.lsp);
                 app.settings = s;
                 if !bad.is_empty() {
                     app.error(format!("settings.json keys: {}", bad.join(", ")));
@@ -472,6 +477,11 @@ impl App {
 
     fn doc(&self) -> Option<&Doc> {
         self.docs.get(self.active_doc())
+    }
+
+    fn doc_mut(&mut self) -> Option<&mut Doc> {
+        let i = self.active_doc();
+        self.docs.get_mut(i)
     }
 
     fn push_agent(&mut self, name: &str, command: &str, cwd: PathBuf) -> usize {
@@ -1262,6 +1272,32 @@ impl App {
             }
             return;
         }
+        // Modal editing gets first refusal on every key; anything it does not
+        // claim falls through to the ordinary bindings, so Ctrl+S, the arrows
+        // and every Alt shortcut keep working in any mode.
+        if self.settings.vim {
+            let mut vim = std::mem::take(&mut self.vim);
+            let verdict = vim.handle(doc, key);
+            self.vim = vim;
+            match verdict {
+                vim::VimResult::Handled => return,
+                vim::VimResult::Yanked(text) => {
+                    if !text.is_empty() {
+                        self.copy_to_host(&text);
+                    }
+                    return;
+                }
+                vim::VimResult::Ex(cmd) => return self.vim_ex(&cmd),
+                vim::VimResult::Search(query, forward) => {
+                    if let Some(doc) = self.doc_mut() {
+                        doc.set_search(&query, SearchOpts::default());
+                        doc.find_step(forward);
+                    }
+                    return;
+                }
+                vim::VimResult::PassThrough => {}
+            }
+        }
         let result = doc.handle_key(key);
         if doc.dirty {
             doc.preview = false;
@@ -1280,6 +1316,30 @@ impl App {
             KeyResult::Message(m) if m.starts_with("save failed") => self.error(m),
             KeyResult::Message(m) => self.info(m),
             KeyResult::Handled | KeyResult::Ignored => {}
+        }
+    }
+
+    /// Carry out a `:` command. Only the ones that map onto something NOIDA
+    /// already does; anything else says so rather than failing silently.
+    fn vim_ex(&mut self, cmd: &str) {
+        let cmd = cmd.trim();
+        if let Ok(line) = cmd.parse::<usize>() {
+            if let Some(doc) = self.doc_mut() {
+                doc.goto(line.saturating_sub(1), None, None);
+            }
+            return;
+        }
+        match cmd.trim_end_matches('!') {
+            "w" => self.run(Action::Save),
+            "wa" => self.run(Action::SaveAll),
+            "q" => self.run(if cmd.ends_with('!') { Action::CloseFile } else { Action::CloseFile }),
+            "wq" | "x" => {
+                self.run(Action::Save);
+                self.run(Action::CloseFile);
+            }
+            "qa" => self.run(Action::Quit),
+            "e" => self.run(Action::ReopenClosedFile),
+            other => self.error(format!("not a NOIDA command: :{other}")),
         }
     }
 

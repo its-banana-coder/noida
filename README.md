@@ -319,13 +319,29 @@ Also on a Mac:
 
 In terminals that support the [kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) (kitty, WezTerm, Ghostty, foot, recent iTerm2), NOIDA also accepts `Ctrl+Shift+P` palette · `Ctrl+Shift+F` / `Ctrl+Shift+H` search / replace in workspace · `Ctrl+Shift+O` symbols in file · `Ctrl+Shift+K` delete line · `Ctrl+Shift+T` reopen closed tab · `Ctrl+Shift+E` file tree. Other terminals send these as plain `Ctrl+key`. Start with `--no-kitty-keys` to turn the protocol off.
 
+### ⌨️ Vim mode
+
+Set `"vim": true` in `~/.config/noida/settings.json` for modal editing. It is a working subset, not an emulation — what is there:
+
+| | |
+|---|---|
+| **Modes** | `i a I A o O` insert · `v` visual · `V` visual line · `Esc` back to normal |
+| **Motions** | `h j k l` · `w b e` (and `W B E`) · `0 ^ $` · `gg G` · `{ }` · `f F t T` with `;` `,` · `Ctrl+d/u/f/b` |
+| **Operators** | `d c y` with any motion · `dd cc yy` · `D C Y` · counts like `d2w`, `3dd` |
+| **Edits** | `x X s S r` · `p P` · `J` join · `u` undo · `Ctrl+r` redo |
+| **Commands** | `/` `?` search with `n` `N` · `:w :q :wq :x :qa :42` |
+
+The mode shows in the status bar. Anything Vim does not claim falls through to NOIDA's own keys, so `Ctrl+S`, `F12`, the arrows and every `Alt` shortcut keep working in any mode. Not implemented: macros, named registers, marks, text objects and `:s///` — [say so in an issue](https://github.com/its-banana-coder/noida/issues) if you miss them.
+
 ### Custom keybindings
 
 Add a `keys` map to `~/.config/noida/settings.json` (`Alt+x` → *Preferences: Open Settings*). Keys look like `alt+y`, `ctrl+alt+k`, `ctrl+shift+p`, `f5`; `alt+S` is the same as `alt+shift+s`. Map a key to `""` or `"none"` to free a built-in shortcut for your agent:
 
 ```json
 {
+  "vim": true,
   "test_command": "cargo nextest run",
+  "lsp": { "sql": "sqls", "java": "jdtls -data /tmp/jdtls" },
   "keys": {
     "alt+y": "command_palette",
     "f5": "review_changes",
@@ -350,6 +366,8 @@ NOIDA's goal is to be **the cockpit between developers and coding agents**: a li
 - [x] **Sessions like VS Code:** new session button, conversation-named tabs, rename, browsing past conversations
 - [x] **Hardening:** CI on Linux and macOS, [latest release](https://github.com/its-banana-coder/noida/releases) with prebuilt binaries, issue templates, [smoke-test checklist](TESTING.md), [website](https://its-banana-coder.github.io/noida/)
 - [x] **Language servers verified:** rust-analyzer, TypeScript 7 (built-in server), Pyright
+- [x] **Vim mode:** modal editing (`"vim": true`) — motions, operators, counts, registers, visual mode
+- [x] **Test runner:** `Alt+u` runs the project's tests and jumps to failures
 - [x] **Easy install:** [crates.io](https://crates.io/crates/noida), Homebrew tap for macOS, signed apt and dnf repositories, static Linux binary, native Windows build
 
 ### 🔨 Next

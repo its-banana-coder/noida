@@ -14,6 +14,7 @@ use crate::activity::{EntryKind, Turn, clock};
 use crate::git::{FileDiff, HunkOp, Repo};
 use crate::theme;
 
+#[derive(Debug)]
 pub enum ViewResult {
     None,
     Close,
@@ -615,18 +616,21 @@ impl TranscriptView {
 /// parentheses), so each token is trimmed of punctuation before asking.
 fn locate(line: &str, resolver: &mut crate::refs::Resolver) -> Option<(PathBuf, usize)> {
     for token in line.split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '"' || c == '\'') {
-        let token = token.trim_matches(|c: char| c == ',' || c == ';' || c == ':' && false);
+        // Runners wrap paths in punctuation: "at src/x.rs:12:5:", "(src/x.rs)".
+        let token = token.trim_end_matches([':', ',', ';', '.', ']', '>']).trim_start_matches(['[', '<', '`']);
         if token.len() < 3 || !token.contains(['/', '\\', '.']) {
             continue;
         }
-        let (path, at) = crate::refs::split_line_suffix(token);
-        // "file.rs:12:5" -> strip the column, then the line.
-        let (path, at) = match (at, crate::refs::split_line_suffix(path)) {
-            (Some(col), (p, Some(l))) if p.contains('.') => (p, Some(l.max(1)).map(|l| { let _ = col; l })),
-            _ => (path, at),
+        // path, path:line, or path:line:col -- peel at most two numbers off.
+        let (once, line_or_col) = crate::refs::split_line_suffix(token);
+        let (twice, line_no) = crate::refs::split_line_suffix(once);
+        let (path, at) = match (line_or_col, line_no) {
+            (Some(_), Some(l)) => (twice, Some(l)),
+            (Some(l), None) => (once, Some(l)),
+            _ => (token, None),
         };
         if let Some(hit) = resolver.resolve(path) {
-            return Some((hit.path, at.unwrap_or(1)));
+            return Some((hit.path, at.unwrap_or(1).max(1)));
         }
     }
     None
@@ -778,5 +782,127 @@ impl TestView {
             }
             buf.set_stringn(area.x + 1, y, text, area.width.saturating_sub(1) as usize, style);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::refs::{FileIndex, Resolver};
+    use std::sync::Arc;
+
+    fn resolver() -> (PathBuf, Resolver) {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut r = Resolver::new(root.clone());
+        r.set_index(Arc::new(FileIndex::build(&root)));
+        (root, r)
+    }
+
+    #[test]
+    fn finds_the_file_a_test_failure_points_at() {
+        let (root, mut r) = resolver();
+
+        // The shapes runners actually print.
+        let cases = [
+            ("thread 'x' panicked at src/refs.rs:281:9:", 281),
+            ("    at src/testing.rs:42", 42),
+            ("  --> src/lsp.rs:120:1", 120),
+            ("FAILED src/agent.rs:89 (assertion)", 89),
+            // A bare path with no line still opens the file.
+            ("running tests in src/git.rs", 1),
+        ];
+        for (line, want_line) in cases {
+            let got = locate(line, &mut r).unwrap_or_else(|| panic!("no location in {line:?}"));
+            assert_eq!(got.1, want_line, "line number from {line:?}");
+            assert!(got.0.starts_with(&root), "{:?} should be under the repo", got.0);
+        }
+
+        // Prose, URLs and things that merely look like paths resolve to nothing.
+        for line in ["running 72 tests", "see https://example.com/docs", "test result: ok. 70 passed"] {
+            assert_eq!(locate(line, &mut r), None, "{line:?} is not a location");
+        }
+    }
+
+    #[test]
+    fn failures_are_walkable_and_open_where_they_failed() {
+        let (_root, mut r) = resolver();
+        let outcome = crate::testing::Outcome {
+            passed: 1,
+            failed: 2,
+            failures: vec!["alpha".into(), "beta".into()],
+            ok: false,
+        };
+        let output = "\
+running 3 tests
+test alpha ... FAILED
+test gamma ... ok
+thread 'alpha' panicked at src/refs.rs:281:9:
+test beta ... FAILED
+test result: FAILED. 1 passed; 2 failed;";
+
+        let mut v = TestView::new("Tests".into());
+        assert!(v.running, "starts out running");
+        v.finish(outcome, output, &mut r);
+        assert!(!v.running);
+        assert_eq!(v.outcome.as_ref().unwrap().summary(), "1 passed, 2 failed");
+        assert!(v.status().contains("n/p failure"), "status offers failure navigation: {}", v.status());
+
+        // It opens on the first failure rather than at the top of the noise.
+        let first = v.selected;
+        assert!(v.rows[first].0.contains("alpha"), "landed on {:?}", v.rows[first].0);
+
+        // n walks forward through failures and wraps.
+        v.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert!(v.selected > first, "n moves forward");
+        // Walking the whole list returns to where it started.
+        let count = v.failures.len();
+        assert!(count >= 2, "this output has several failing lines");
+        for _ in 1..count {
+            v.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        }
+        assert_eq!(v.selected, first, "n wraps around to the first failure");
+        v.handle_key(KeyEvent::from(KeyCode::Char('p')));
+        assert!(v.selected > first, "p goes back to the last one");
+
+        // Enter on a row with a location opens that file and line.
+        let panic_row = v.rows.iter().position(|(t, _, _)| t.contains("panicked at")).unwrap();
+        v.selected = panic_row;
+        match v.handle_key(KeyEvent::from(KeyCode::Enter)) {
+            ViewResult::Open(path, line) => {
+                assert!(path.ends_with("src/refs.rs"), "opened {path:?}");
+                assert_eq!(line, 281);
+            }
+            other => panic!("expected an Open, got {other:?}"),
+        }
+
+        // Enter on a plain line does nothing rather than opening something wrong.
+        v.selected = v.rows.iter().position(|(t, _, _)| t.starts_with("running 3")).unwrap();
+        assert!(matches!(v.handle_key(KeyEvent::from(KeyCode::Enter)), ViewResult::None));
+
+        // r asks for a re-run; Esc closes.
+        assert!(matches!(v.handle_key(KeyEvent::from(KeyCode::Char('r'))), ViewResult::RerunTests));
+        assert!(matches!(v.handle_key(KeyEvent::from(KeyCode::Esc)), ViewResult::Close));
+    }
+
+    #[test]
+    fn a_passing_run_says_so_without_offering_failures() {
+        let (_root, mut r) = resolver();
+        let mut v = TestView::new("Tests".into());
+        v.finish(crate::testing::Outcome { passed: 70, failed: 0, failures: vec![], ok: true }, "test result: ok. 70 passed;", &mut r);
+        assert_eq!(v.status(), "70 passed  ·  r re-run · Esc close");
+        // Nothing to walk: n must not panic or move anywhere.
+        let before = v.selected;
+        v.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert_eq!(v.selected, before);
+    }
+
+    #[test]
+    fn empty_output_still_renders() {
+        let (_root, mut r) = resolver();
+        let mut v = TestView::new("Tests".into());
+        v.finish(crate::testing::Outcome { ok: true, ..Default::default() }, "", &mut r);
+        assert_eq!(v.rows.len(), 1, "a placeholder row, never zero");
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 5));
+        v.render(Rect::new(0, 0, 40, 5), &mut buf);
     }
 }

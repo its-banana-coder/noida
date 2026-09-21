@@ -25,6 +25,13 @@ pub struct Settings {
     /// How to run this project's tests, when the manifest is not enough
     /// (e.g. "just test", "cargo nextest run"). Empty means: work it out.
     pub test_command: Option<String>,
+    /// Modal (Vim) editing: normal, insert and visual modes.
+    pub vim: bool,
+    /// Language servers by file extension, e.g. {"sql": "sqls"}. NOIDA has
+    /// built-in defaults for Rust, TypeScript, Python, Go and Java; this adds
+    /// any other language, or replaces a default when the server needs
+    /// arguments.
+    pub lsp: HashMap<String, String>,
 }
 
 impl Default for Settings {
@@ -40,6 +47,8 @@ impl Default for Settings {
             share_editor_context: true,
             keys: HashMap::new(),
             test_command: None,
+            vim: false,
+            lsp: HashMap::new(),
         }
     }
 }
