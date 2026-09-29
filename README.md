@@ -55,6 +55,18 @@ flowchart LR
 
 ---
 
+## ⚖️ How NOIDA compares
+
+| Setup | Agent | RAM | Trade-offs |
+|---|---|---|---|
+| **Cursor / Windsurf** | Built-in, proprietary | 1-2 GB | Heavy GUI. Excellent AI features, but you don't control the agent loop or prompts. |
+| **VS Code + Roo / Cline** | Extension, uses APIs | 1-2 GB | Heavy GUI. Great workflow, but you can't use the official `claude` CLI or MCP slash commands. |
+| **Neovim / tmux** | Plugins or side terminal | ~50 MB | Terminal native. Hard to make agent output (like `file:line`) instantly clickable without custom scripts. |
+| **Bare terminal** | Real CLI (`claude`) | ~10 MB | Real tools. Painful to review multi-file edits; requires context switching to a separate IDE to read code. |
+| **NOIDA** | Real CLI (`claude`) | ~20 MB | **Best of both.** Terminal native, runs the real CLIs, but adds clickable references, file trees, and visual diffs. |
+
+---
+
 ## 🚀 Install
 
 **macOS (Homebrew)**
